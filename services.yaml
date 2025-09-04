@@ -1,0 +1,13 @@
+
+# Services for Weasley Clock integration
+generate_image:
+  name: Generate Clock Image
+  description: Manually generate a new Weasley Clock image
+  fields:
+    reason:
+      name: Reason
+      description: Optional reason for generating the image
+      required: false
+      example: "Manual update"
+      selector:
+        text:

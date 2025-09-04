@@ -1,0 +1,80 @@
+
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "🧙‍♂️ Weasley Clock - Configurazione",
+        "description": "{setup_info}\n\n⚙️ **Configurazione iniziale:**\n\n🔍 **Scoperta automatica:** Trova automaticamente tutti gli utenti person nel sistema\n🔄 **Aggiornamenti automatici:** L'orologio si aggiorna quando cambia la posizione degli utenti\n📏 **Dimensioni:** Personalizza larghezza e altezza dell'orologio",
+        "data": {
+          "auto_discover_users": "Scoperta automatica utenti",
+          "auto_update_enabled": "Aggiornamenti automatici",
+          "update_interval_seconds": "Intervallo aggiornamento (10-300 secondi)",
+          "clock_width": "Larghezza orologio (200-800px)",
+          "clock_height": "Altezza orologio (200-800px)"
+        }
+      },
+      "manual_users": {
+        "title": "👥 Configurazione Manuale Utenti",
+        "description": "{available_persons}\n\n{format_help}",
+        "data": {
+          "users_config": "Configurazione utenti (uno per riga)"
+        }
+      },
+      "user_filters": {
+        "title": "✅ Selezione Utenti",
+        "description": "{discovered_users}\n\n{selection_help}",
+        "data": {
+          "exclude_local_only": "Escludi utenti che non escono mai di casa"
+        }
+      },
+      "zones": {
+        "title": "🗺️ Configurazione Zone",
+        "description": "{discovered_zones}\n\n{zones_help}",
+        "data": {
+          "zone_0_id": "🔒 Zona 1 - ID Sistema (bloccato)",
+          "zone_0_name": "✏️ Zona 1 - Nome da mostrare", 
+          "zone_1_id": "🔒 Zona 2 - ID Sistema (bloccato)",
+          "zone_1_name": "✏️ Zona 2 - Nome da mostrare",
+          "zone_2_id": "🔒 Zona 3 - ID Sistema (bloccato)", 
+          "zone_2_name": "✏️ Zona 3 - Nome da mostrare",
+          "zone_3_id": "🔒 Zona 4 - ID Sistema (bloccato)",
+          "zone_3_name": "✏️ Zona 4 - Nome da mostrare", 
+          "zone_4_id": "🔒 Zona 5 - ID Sistema (bloccato)",
+          "zone_4_name": "✏️ Zona 5 - Nome da mostrare",
+          "zone_5_id": "🔒 Zona 6 - ID Sistema (bloccato)",
+          "zone_5_name": "✏️ Zona 6 - Nome da mostrare",
+          "zone_6_id": "🔒 Zona 7 - ID Sistema (bloccato)", 
+          "zone_6_name": "✏️ Zona 7 - Nome da mostrare",
+          "zone_7_id": "🔒 Zona 8 - ID Sistema (bloccato)",
+          "zone_7_name": "✏️ Zona 8 - Nome da mostrare"
+        }
+      },
+      "appearance": {
+        "title": "🎨 Configurazione Finale",
+        "description": "{final_step}",
+        "data": {
+          "output_path": "📁 Percorso file immagine"
+        }
+      }
+    },
+    "error": {
+      "unknown": "❌ Errore sconosciuto durante la configurazione. Riprova.",
+      "invalid_config": "❌ Configurazione non valida. Controlla i dati inseriti.",
+      "zones_required": "❌ È necessario configurare almeno una zona.",
+      "minimum_zones_required": "❌ Servono almeno 2 zone per creare l'orologio.",
+      "users_required": "❌ È necessario configurare almeno un utente.",
+      "invalid_format": "❌ Formato configurazione utenti non valido. Usa: entity_id,nome,percorso_immagine",
+      "no_users_selected": "❌ Seleziona almeno un utente da mostrare nell'orologio.",
+      "interval_too_small": "❌ Intervallo troppo piccolo. Minimo 10 secondi.",
+      "interval_too_large": "❌ Intervallo troppo grande. Massimo 300 secondi.",
+      "dimensions_too_small": "❌ Dimensioni troppo piccole. Minimo 200x200 pixel.",
+      "dimensions_too_large": "❌ Dimensioni troppo grandi. Massimo 800x800 pixel.",
+      "path_required": "❌ Il percorso del file è obbligatorio.",
+      "invalid_path": "❌ Il percorso deve iniziare con /config/www/ per essere accessibile via web.",
+      "invalid_extension": "❌ Il file deve avere estensione .png"
+    },
+    "abort": {
+      "already_configured": "✅ Il componente Weasley Clock è già configurato"
+    }
+  }
+}
