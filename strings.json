@@ -1,6 +1,10 @@
 
 {
   "config": {
+    "abort": {
+      "single_instance_allowed": "È già configurato un Weasley Clock. Usa 'Riconfigura' per modificare le impostazioni.",
+      "reconfigure_successful": "Configurazione aggiornata con successo."
+    },
     "step": {
       "user": {
         "title": "🧙‍♂️ Weasley Clock - Configurazione",
@@ -30,24 +34,7 @@
       "zones": {
         "title": "🗺️ Configurazione Zone",
         "description": "{discovered_zones}\n\n{zones_help}",
-        "data": {
-          "zone_0_id": "🔒 Zona 1 - ID Sistema (bloccato)",
-          "zone_0_name": "✏️ Zona 1 - Nome da mostrare", 
-          "zone_1_id": "🔒 Zona 2 - ID Sistema (bloccato)",
-          "zone_1_name": "✏️ Zona 2 - Nome da mostrare",
-          "zone_2_id": "🔒 Zona 3 - ID Sistema (bloccato)", 
-          "zone_2_name": "✏️ Zona 3 - Nome da mostrare",
-          "zone_3_id": "🔒 Zona 4 - ID Sistema (bloccato)",
-          "zone_3_name": "✏️ Zona 4 - Nome da mostrare", 
-          "zone_4_id": "🔒 Zona 5 - ID Sistema (bloccato)",
-          "zone_4_name": "✏️ Zona 5 - Nome da mostrare",
-          "zone_5_id": "🔒 Zona 6 - ID Sistema (bloccato)",
-          "zone_5_name": "✏️ Zona 6 - Nome da mostrare",
-          "zone_6_id": "🔒 Zona 7 - ID Sistema (bloccato)", 
-          "zone_6_name": "✏️ Zona 7 - Nome da mostrare",
-          "zone_7_id": "🔒 Zona 8 - ID Sistema (bloccato)",
-          "zone_7_name": "✏️ Zona 8 - Nome da mostrare"
-        }
+        "data": {}
       },
       "appearance": {
         "title": "🎨 Configurazione Finale",

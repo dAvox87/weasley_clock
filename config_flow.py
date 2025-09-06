@@ -27,6 +27,12 @@ class WeasleyClockConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                               user_input: dict[str, Any] | None = None
                               ) -> FlowResult:
         """Handle the initial step."""
+        
+        # Check if already configured - only allow one instance (unless we're reconfiguring)
+        existing_entries = self._async_current_entries()
+        if existing_entries and not self.context.get("source") == config_entries.SOURCE_RECONFIGURE:
+            return self.async_abort(reason="single_instance_allowed")
+        
         errors = {}
 
         if user_input is not None:
@@ -154,8 +160,7 @@ class WeasleyClockConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             selector.TextSelector(
                 selector.TextSelectorConfig(
                     type=selector.TextSelectorType.TEXT, 
-                    multiline=True,
-                    placeholder="person.mario,Mario Rossi,/config/www/images/mario.jpg\nperson.lucia,Lucia Bianchi,/config/www/images/lucia.jpg"
+                    multiline=True
                 ))
         })
 
@@ -191,11 +196,46 @@ class WeasleyClockConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         if user_input is not None:
             try:
-                # Processa i checkbox degli utenti
+                # Processa i checkbox degli utenti - deve gestire anche i valori di default
                 included_users = []
-                for key, value in user_input.items():
-                    if key.startswith("include_") and value:
-                        entity_id = key.replace("include_", "")
+                
+                # Prima ottieni tutti gli utenti disponibili per controllare i default
+                try:
+                    person_entity_ids = self.hass.states.async_entity_ids("person")
+                except Exception:
+                    person_entity_ids = []
+
+                person_entities = []
+                for entity_id in person_entity_ids:
+                    try:
+                        state = self.hass.states.get(entity_id)
+                        if state and state.attributes:
+                            friendly_name = state.attributes.get(
+                                "friendly_name",
+                                entity_id.split('.')[1].replace('_', ' ').title())
+                            entity_picture = state.attributes.get("entity_picture", "")
+                            person_entities.append((entity_id, friendly_name, entity_picture))
+                    except Exception:
+                        continue
+
+                # Processa ogni utente controllando sia user_input che default
+                for entity_id, friendly_name, picture in person_entities:
+                    checkbox_key = f"include_{entity_id}"
+                    
+                    # Calcola il valore di default (stesso algoritmo usato nello schema)
+                    name_lower = friendly_name.lower()
+                    seems_device = ('_' in name_lower
+                                    or any(char.isdigit() for char in friendly_name)
+                                    or name_lower in [
+                                        'device', 'system', 'admin', 'guest', 'unknown'
+                                    ] or len(friendly_name) < 3)
+                    has_custom_image = bool(picture)
+                    suggested_default = has_custom_image or not seems_device
+                    
+                    # Usa il valore da user_input se presente, altrimenti usa il default
+                    is_selected = user_input.get(checkbox_key, suggested_default)
+                    
+                    if is_selected:
                         included_users.append(entity_id)
 
                 if not included_users:
@@ -292,14 +332,64 @@ class WeasleyClockConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         if user_input is not None:
             try:
-                # Collect zone configurations
+                # Collect zone configurations using zone list from previous step
                 zone_configs = []
-                i = 0
-                while f"zone_{i}_name" in user_input:
-                    zone_name = user_input.get(f"zone_{i}_name", "").strip()
-                    zone_id = user_input.get(f"zone_{i}_id", "").strip()
+                
+                # Get discovered zones from previous processing
+                discovered_zones = set()
+                zones_usage = {}
 
-                    if zone_name and zone_id:
+                try:
+                    person_entity_ids = self.hass.states.async_entity_ids("person")
+                except Exception:
+                    person_entity_ids = []
+
+                for entity_id in person_entity_ids:
+                    try:
+                        state = self.hass.states.get(entity_id)
+                        if state and state.attributes:
+                            zone = state.state
+                            discovered_zones.add(zone)
+                    except Exception:
+                        continue
+
+                # Get zone entities
+                try:
+                    zone_entity_ids = self.hass.states.async_entity_ids("zone")
+                except Exception:
+                    zone_entity_ids = []
+
+                for entity_id in zone_entity_ids:
+                    try:
+                        state = self.hass.states.get(entity_id)
+                        if state:
+                            zone_name = entity_id.replace('zone.', '')
+                            discovered_zones.add(zone_name)
+                    except Exception:
+                        continue
+
+                # Add basic zones
+                basic_zones = ['home', 'not_home', 'unknown']
+                for basic_zone in basic_zones:
+                    discovered_zones.add(basic_zone)
+
+                # Build priority list
+                zone_priority = []
+                for zone in ['home', 'not_home']:
+                    if zone in discovered_zones:
+                        zone_priority.append(zone)
+                
+                for zone in sorted(discovered_zones):
+                    if zone not in zone_priority:
+                        zone_priority.append(zone)
+
+                actual_zones = zone_priority[:min(len(zone_priority), 8)]
+                
+                # Process zone names from user input
+                i = 0
+                for zone_id in actual_zones:
+                    zone_name = user_input.get(f"zone_{i}_name", "").strip()
+                    if zone_name:
                         zone_configs.append({
                             "id": zone_id,
                             "name": zone_name
@@ -380,47 +470,58 @@ class WeasleyClockConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         if not zone_priority:
             zone_priority = ["home", "work", "school", "gym"]
 
-        # Crea schema dinamico per ogni zona - ID bloccato, nome editabile
+        # Crea schema dinamico con solo i nomi editabili
+        # Gli ID zone saranno mostrati nelle description_placeholders
         schema_dict = {}
-        for i, zone in enumerate(zone_priority[:8]):  # Max 8 zones
+        actual_zones = zone_priority  # RIMUOVO IL LIMITE: mostra TUTTE le zone trovate
+        
+        for i, zone in enumerate(actual_zones):
             display_name = zone.replace('_', ' ').title()
             if zone == 'not_home':
                 display_name = 'Fuori Casa'
             elif zone == 'home':
                 display_name = 'Casa'
 
-            # ID zona (nascosto ma presente per il processing)
-            schema_dict[vol.Optional(f"zone_{i}_id", default=zone)] = vol.All(
-                str, vol.Length(min=1))
-            # Nome zona (editabile)
-            schema_dict[vol.Optional(f"zone_{i}_name",
-                                     default=display_name)] = str
+            # Mostra l'ID zona direttamente nel label del campo
+            field_label = f"📍 {zone} → Nome visualizzato"
+            schema_dict[vol.Required(f"zone_{i}_name", default=display_name, description=field_label)] = selector.TextSelector(
+                selector.TextSelectorConfig(
+                    type=selector.TextSelectorType.TEXT
+                ))
 
         data_schema = vol.Schema(schema_dict)
 
-        # Crea informazioni per l'utente
-        zone_info = []
-        if discovered_zones:
-            zone_info.append("🗺️ **Zone trovate nel sistema:**")
-            zone_info.append("")
-            for zone in sorted(discovered_zones):
-                users_in_zone = zones_usage.get(zone, [])
-                if users_in_zone:
-                    users_str = ", ".join(users_in_zone)
-                    zone_info.append(f"📍 **{zone}** → {users_str}")
-                else:
-                    zone_info.append(f"📍 **{zone}** → Non utilizzata")
-        else:
-            zone_info.append("❌ **Nessuna zona trovata**")
-            zone_info.append("Le zone saranno create automaticamente quando gli utenti si sposteranno")
+        # Crea tabella zone con ID fissi e nomi editabili - TUTTE LE ZONE
+        zone_table = []
+        zone_table.append(f"📋 **Configurazione Zone** ({len(actual_zones)} zone trovate):")
+        zone_table.append("")
+        zone_table.append("| **ID Zona (fisso)** | **Nome Personalizzato** | **Utenti Attuali** |")
+        zone_table.append("|---------------------|-------------------------|-------------------|")
+        
+        for i, zone in enumerate(actual_zones):
+            display_name = zone.replace('_', ' ').title()
+            if zone == 'not_home':
+                display_name = 'Fuori Casa'
+            elif zone == 'home':
+                display_name = 'Casa'
+            
+            users_in_zone = zones_usage.get(zone, [])
+            users_info = ', '.join(users_in_zone) if users_in_zone else "Nessuno"
+            
+            zone_table.append(f"| **`{zone}`** | {display_name} | {users_info} |")
+        
+        zone_table.append("")
+        zone_table.append("🎨 **I colori sono assegnati automaticamente**")
+        zone_table.append("⚠️ **Servono almeno 2 zone per creare l'orologio**")
+        zone_table.append("📌 **Gli ID zone sono quelli di Home Assistant e NON possono essere modificati**")
 
         return self.async_show_form(
             step_id="zones",
             data_schema=data_schema,
             errors=errors,
             description_placeholders={
-                "discovered_zones": "\n".join(zone_info),
-                "zones_help": "🎨 **I colori sono assegnati automaticamente**\n✏️ Puoi personalizzare solo i nomi che appariranno sull'orologio\n🔒 Gli ID sono bloccati dal sistema Home Assistant\n\n⚠️ Servono almeno 2 zone per creare l'orologio"
+                "discovered_zones": "\n".join(zone_table),
+                "zones_help": "✏️ **Modifica i nomi nei campi sopra**\n📌 **Gli ID zone (come 'home', 'work', ecc.) sono fissi e corrispondono a Home Assistant**\n🔍 **Ogni campo mostra chiaramente l'ID zona corrispondente**"
             },
         )
 
@@ -449,10 +550,19 @@ class WeasleyClockConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     if not self._validate_config(final_config):
                         errors["base"] = "invalid_config"
                     else:
-                        return self.async_create_entry(
-                            title=f"{NAME} - {len(final_config.get('zones', {}))} zone",
-                            data=final_config,
-                        )
+                        # Check if we're reconfiguring an existing entry
+                        if self.context.get("source") == config_entries.SOURCE_RECONFIGURE:
+                            reconfigure_entry = self._get_reconfigure_entry()
+                            return self.async_update_reload_and_abort(
+                                reconfigure_entry,
+                                data_updates=final_config,
+                                reason="reconfigure_successful"
+                            )
+                        else:
+                            return self.async_create_entry(
+                                title=f"{NAME} - {len(final_config.get('zones', {}).get('zone_configs', []))} zone",
+                                data=final_config,
+                            )
                         
             except Exception as e:
                 _LOGGER.error(f"Error in appearance step: {e}")
@@ -548,6 +658,19 @@ class WeasleyClockConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         config["zone_mapping"] = zone_mapping
 
         return config
+
+    async def async_step_reconfigure(self, user_input: dict[str, Any] | None = None) -> FlowResult:
+        """Handle reconfiguration of the component."""
+        # Get the entry being reconfigured
+        reconfigure_entry = self._get_reconfigure_entry()
+        if not reconfigure_entry:
+            return self.async_abort(reason="no_entry_to_reconfigure")
+        
+        # Load existing configuration data
+        self.config_data = reconfigure_entry.data.copy()
+        
+        # Start from the beginning with existing data pre-filled
+        return await self.async_step_user(user_input)
 
     def _validate_config(self, config: dict[str, Any]) -> bool:
         """Validate the final configuration."""

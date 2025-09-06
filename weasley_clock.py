@@ -10,6 +10,11 @@ import logging
 import hashlib
 from io import BytesIO
 from typing import Dict, List, Tuple, Optional
+from datetime import datetime
+
+from homeassistant.core import HomeAssistant
+
+_LOGGER = logging.getLogger(__name__)
 
 try:
     from PIL import Image, ImageDraw, ImageFont
@@ -23,24 +28,23 @@ except ImportError:
     _LOGGER.warning("requests library not available, URL images will not work")
     requests = None
 
-from homeassistant.core import HomeAssistant
-from datetime import datetime
-
-_LOGGER = logging.getLogger(__name__)
-
 
 class WeasleyClockGenerator:
 
     def __init__(self, hass: HomeAssistant, config_data: dict = None):
         """Initialize the Weasley Clock generator with Home Assistant instance."""
         self.hass = hass
-        self.width = 400
+        self.width = 448
         self.height = 448
         # Center will be calculated dynamically based on zone optimization
         self.center_x = None
         self.center_y = None
-        self.outer_radius = 180
-        self.inner_radius = 40
+        # Calculate radius based on the smaller dimension to use full available space
+        min_dimension = min(self.width, self.height)
+        self.outer_radius = int(
+            (min_dimension - 40) // 2)  # Leave 20px margin on each side
+        self.inner_radius = max(40, self.outer_radius //
+                                6)  # Scale inner radius proportionally
         # Use default configuration (no file loading in event loop)
         if config_data:
             self.config = self._build_config_from_entry(config_data)
@@ -49,46 +53,14 @@ class WeasleyClockGenerator:
         self.last_image_hash = None  # Track image changes
 
     def _get_default_config(self):
-        """Get configuration from file or return defaults."""
-        # Try to load from config file first
-        config_path_yaml = "/config/custom_components/weasley_clock/config.yaml"
-
-        default_config = {
+        """Get minimal default configuration - everything else managed via config flow."""
+        return {
             "auto_discover_users": True,
             "auto_update_enabled": True,
             "update_interval_seconds": 30,
             "output_path": '/config/www/weasley_clock.png',
             "zone_mapping": {},
-            "zones": {
-                "home": {
-                    "label": "Casa",
-                    "color": "#4CAF50"
-                },
-                "work": {
-                    "label": "Lavoro",
-                    "color": "#2196F3"
-                },
-                "school": {
-                    "label": "Scuola",
-                    "color": "#FF9800"
-                },
-                "gym": {
-                    "label": "Palestra",
-                    "color": "#9C27B0"
-                },
-                "shopping": {
-                    "label": "Shopping",
-                    "color": "#F44336"
-                },
-                "traveling": {
-                    "label": "Viaggio",
-                    "color": "#795548"
-                },
-                "unknown": {
-                    "label": "Sconosciuto",
-                    "color": "#607D8B"
-                }
-            },
+            "zones": {},  # Empty - populated by config flow
             "clock_style": {
                 "background_color": '#D2B48C',
                 "border_color": '#8B4513',
@@ -104,11 +76,6 @@ class WeasleyClockGenerator:
             }
         }
 
-        # The config.yaml loading is now removed as per the config flow implementation.
-        # The configuration is now managed entirely through the Home Assistant config entry.
-
-        return default_config
-
     def _build_config_from_entry(self, config_data: dict) -> dict:
         """Build configuration from config entry data."""
         config = {
@@ -123,37 +90,7 @@ class WeasleyClockGenerator:
             "zone_mapping":
             config_data.get("zone_mapping", {}),
             "zones":
-            config_data.get(
-                "zones", {
-                    "home": {
-                        "label": "Casa",
-                        "color": "#4CAF50"
-                    },
-                    "work": {
-                        "label": "Lavoro",
-                        "color": "#2196F3"
-                    },
-                    "school": {
-                        "label": "Scuola",
-                        "color": "#FF9800"
-                    },
-                    "gym": {
-                        "label": "Palestra",
-                        "color": "#9C27B0"
-                    },
-                    "shopping": {
-                        "label": "Shopping",
-                        "color": "#F44336"
-                    },
-                    "traveling": {
-                        "label": "Viaggio",
-                        "color": "#795548"
-                    },
-                    "unknown": {
-                        "label": "Sconosciuto",
-                        "color": "#607D8B"
-                    }
-                }),
+            config_data.get("zones", {}),
             "clock_style": {
                 "background_color": '#D2B48C',
                 "border_color": '#8B4513',
@@ -234,803 +171,94 @@ class WeasleyClockGenerator:
 
         return person_entities
 
-    def _apply_user_filters(
-            self, person_entities: Dict[str, Dict]) -> Dict[str, Dict]:
-        """Apply user filters to exclude unwanted users."""
-        user_filters = self.config.get('user_filters', {})
-        filtered_entities = {}
+    def _apply_user_filters(self, users_data: Dict[str,
+                                                   Dict]) -> Dict[str, Dict]:
+        """Apply user filters: show ONLY selected users, no autodiscovery extras."""
+        config_filters = self.config.get('user_filters', {})
 
-        _LOGGER.info(f"Applying user filters. Config: {user_filters}")
-        _LOGGER.info(f"Found person entities: {list(person_entities.keys())}")
+        # If no filters are present, return all users
+        if not config_filters:
+            return users_data
 
-        # Se è specificata una lista di utenti inclusi, usa SOLO quelli (logica corretta)
-        included_users = user_filters.get('selected_users', [])
-        _LOGGER.info(f"Selected users from config: {included_users}")
+        # Get filter lists
+        included_users = config_filters.get('included_users', [])
+        selected_users = config_filters.get('selected_users',
+                                            [])  # From config flow
+        excluded_users = config_filters.get('excluded_users', [])
+        exclude_local_only = config_filters.get('exclude_local_only', False)
 
-        if included_users:
-            for entity_id in included_users:
-                if entity_id in person_entities:
-                    filtered_entities[entity_id] = person_entities[entity_id]
-                    _LOGGER.info(f"Including selected user: {entity_id}")
-                else:
-                    _LOGGER.warning(
-                        f"Selected user {entity_id} not found in discovered entities"
-                    )
-            _LOGGER.info(
-                f"After user selection: {len(filtered_entities)} users")
-            return filtered_entities
+        # Use selected_users if present (from config flow), otherwise use included_users
+        target_users = selected_users if selected_users else included_users
 
-        # Se non ci sono utenti selezionati specifici, applica filtri di esclusione tradizionali
-        excluded_users = user_filters.get('excluded_users', [])
-        exclude_local_only = user_filters.get('exclude_local_only', False)
+        filtered_data = {}
 
-        for entity_id, person_info in person_entities.items():
-            # Salta utenti nella lista di esclusione manuale
-            if entity_id in excluded_users:
-                _LOGGER.debug(f"Excluding user from blacklist: {entity_id}")
-                continue
-
-            # Se abilitato, esclude utenti che sembrano essere solo locali/dispositivi di sistema
-            if exclude_local_only:
-                # Verifica se l'utente ha un'immagine personalizzata (indica utente reale)
-                has_custom_image = person_info.get('image_path', '') != ''
-
-                # Verifica se il nome sembra un dispositivo/sistema (contiene numeri, underscore, ecc.)
-                name = person_info.get('name', '')
-                seems_device = (
-                    '_' in name.lower() or any(char.isdigit() for char in name)
-                    or name.lower()
-                    in ['device', 'system', 'admin', 'guest', 'unknown']
-                    or len(name) < 3)
-
-                # Se non ha immagine personalizzata E sembra un dispositivo, escludilo
-                if not has_custom_image and seems_device:
+        # Se ci sono utenti specificatamente selezionati, mostra SOLO quelli (nessuna autodiscovery extra)
+        if target_users:
+            # Modalità selezione specifica: mostra SOLO gli utenti selezionati
+            for user_id in target_users:
+                # Controlla anche che l'utente non sia escluso
+                if user_id in users_data and user_id not in excluded_users:
+                    filtered_data[user_id] = users_data[user_id]
                     _LOGGER.debug(
-                        f"Excluding local/device user: {entity_id} - {name}")
-                    continue
+                        f"Added specifically selected user: {user_id}")
 
-            # Aggiungi l'utente se passa tutti i filtri
-            filtered_entities[entity_id] = person_info
-            _LOGGER.debug(
-                f"Including filtered user: {entity_id} - {person_info['name']}"
+            _LOGGER.info(
+                f"Specific selection mode: {len(target_users)} users selected, {len(filtered_data)} found"
+            )
+            return filtered_data  # IMPORTANTE: termina qui quando ci sono utenti selezionati
+        else:
+            # Modalità autodiscovery completa: includi tutti tranne quelli esclusi
+            for user_id, user_info in users_data.items():
+                should_include = True
+
+                # Applica filtro exclude_local_only
+                if exclude_local_only and user_info.get('zone') == 'home':
+                    should_include = False
+
+                # Non includere utenti specificatamente esclusi
+                if user_id in excluded_users:
+                    should_include = False
+                    _LOGGER.debug(f"Excluding user: {user_id}")
+
+                if should_include:
+                    filtered_data[user_id] = user_info
+                    _LOGGER.debug(f"Added discovered user: {user_id}")
+
+            _LOGGER.info(
+                f"Full autodiscovery mode: {len(users_data)} discovered, {len(excluded_users)} excluded, {len(filtered_data)} final result"
             )
 
-        _LOGGER.info(
-            f"User filtering: {len(person_entities)} found, {len(filtered_entities)} included after filtering"
-        )
-        return filtered_entities
+        return filtered_data
 
-    def _calculate_dynamic_center(self, zone_count: int) -> Tuple[int, int]:
-        """Calculate the center position based on zone optimization for fixed image size."""
-        if zone_count <= 3:
-            # Quarter circle: posiziona il centro in basso a destra per mostrare il quadrante superiore sinistro
-            center_x = self.width - 80  # Molto spostato a destra
-            center_y = self.height - 80  # Molto spostato in basso
-        elif zone_count <= 6:
-            # Half circle: centro in basso per mostrare la metà superiore dell'orologio
-            center_x = self.width // 2  # Centro orizzontalmente
-            center_y = self.height - 100  # Spostato molto in basso
-        else:
-            # Full circle: centro tradizionale al centro dell'immagine
-            center_x = self.width // 2
-            center_y = self.height // 2
-
-        return center_x, center_y
-
-    def _get_display_optimization(self, zone_count: int) -> Dict:
-        """Determine the optimal display configuration based on zone count."""
-        if zone_count <= 3:
-            # Quarter circle - show 90 degrees
-            return {
-                'arc_degrees': 90,
-                'start_angle': -45,  # Start 45 degrees before top
-                'display_type': 'quarter'
-            }
-        elif zone_count <= 6:
-            # Half circle - show 180 degrees
-            return {
-                'arc_degrees': 180,
-                'start_angle': -90,  # Start 90 degrees before top
-                'display_type': 'half'
-            }
-        else:
-            # Full circle - show 360 degrees
-            return {
-                'arc_degrees': 360,
-                'start_angle': 0,
-                'display_type': 'full'
-            }
-
-    def _get_user_positions(self) -> Dict[str, str]:
-        """Get current positions of all tracked users."""
-        positions = {}
-
-        # Check if we should use automatic discovery or manual configuration
-        if self.config.get('auto_discover_users', True):
-            # Automatically discover all person entities
-            person_entities = self._get_all_person_entities()
-            # Apply filters
-            filtered_person_entities = self._apply_user_filters(
-                person_entities)
-            for entity_id, info in filtered_person_entities.items():
-                raw_zone = info['zone']
-                mapped_zone = self._map_zone_name(raw_zone)
-                positions[entity_id] = mapped_zone
-                _LOGGER.debug(
-                    f"Auto-discovered user {entity_id} is in zone: {raw_zone} -> {mapped_zone}"
-                )
-        else:
-            # Use manual configuration
-            # This part is less relevant now with config flow managing users directly
-            # but kept for potential fallback or older configurations.
-            # A more robust solution would involve getting user lists from config entry data.
-            for entity_id in self.config.get('users', {}):
-                try:
-                    state = self.hass.states.get(entity_id)
-                    if state:
-                        raw_zone = state.state
-                        mapped_zone = self._map_zone_name(raw_zone)
-                        positions[entity_id] = mapped_zone
-                        _LOGGER.debug(
-                            f"Configured user {entity_id} is in zone: {raw_zone} -> {mapped_zone}"
-                        )
-                    else:
-                        _LOGGER.warning(f"Entity {entity_id} not found")
-                        positions[entity_id] = 'unknown'
-                except Exception as e:
-                    _LOGGER.error(
-                        f"Error getting position for {entity_id}: {e}")
-                    positions[entity_id] = 'unknown'
-
-        return positions
-
-    def _map_zone_name(self, ha_zone: str) -> str:
-        """Map Home Assistant zone names to display names using zone_mapping configuration."""
-        zone_mapping = self.config.get('zone_mapping', {})
-        mapped_name = zone_mapping.get(ha_zone, ha_zone)
-
-        # If no mapping found, use the zone name as-is but clean it up
-        if mapped_name == ha_zone:
-            # Clean up zone name: replace underscores with spaces and title case
-            mapped_name = ha_zone.replace('_', ' ').title()
-
-        return mapped_name
-
-    def _calculate_zone_angles(self, zones: List[str]) -> Dict[str, float]:
-        """Calculate angles for each zone segment across the full circle."""
-        zone_angles = {}
-        zone_count = len(zones)
-
-        if zone_count == 0:
-            return zone_angles
-
-        if zone_count == 1:
-            # Single zone - put it at the top (12 o'clock)
-            # Nel sistema matematico standard: -90° = 12 o'clock
-            zone_angles[zones[0]] = math.radians(-90)
-        else:
-            # Always distribute zones across the full 360-degree circle
-            angle_step = 360.0 / zone_count
-
-            for i, zone in enumerate(zones):
-                # Partendo dalle 12 o'clock (-90° nel sistema matematico)
-                # e andando in senso orario
-                angle_degrees = -90 + (i * angle_step)
-                zone_angles[zone] = math.radians(angle_degrees)
-
-        return zone_angles
-
-    def _draw_arc_segment(self, draw: ImageDraw.Draw, start_angle: float,
-                          end_angle: float, inner_radius: int,
-                          outer_radius: int, fill_color: str,
-                          border_color: str) -> None:
-        """Draw an arc segment (partial circle) instead of full circle."""
-        # Create points for the arc segment
-        points = []
-
-        # Number of points to create smooth arc
-        num_points = max(20, int(abs(end_angle - start_angle) * 20))
-
-        # Outer arc points
-        for i in range(num_points + 1):
-            angle = start_angle + (end_angle - start_angle) * i / num_points
-            x = self.center_x + outer_radius * math.cos(angle)
-            y = self.center_y + outer_radius * math.sin(angle)
-            points.append((x, y))
-
-        # Inner arc points (reverse order)
-        for i in range(num_points, -1, -1):
-            angle = start_angle + (end_angle - start_angle) * i / num_points
-            x = self.center_x + inner_radius * math.cos(angle)
-            y = self.center_y + inner_radius * math.sin(angle)
-            points.append((x, y))
-
-        # Draw the filled segment
-        if len(points) > 2:
-            draw.polygon(points,
-                         fill=fill_color,
-                         outline=border_color,
-                         width=3)
-
-    def _draw_clock_face(self, img: Image.Image, draw: ImageDraw.Draw,
-                         zones: List[str]) -> None:
-        """Draw the wooden clock face like the original Weasley Clock."""
-        style = self.config.get('clock_style', {})
-        bg_color = style.get('background_color',
-                             '#D2B48C')  # Wood color only for the clock circle
-        border_color = style.get('border_color', '#8B4513')
-        text_color = style.get('text_color', '#654321')
-        ornament_color = style.get('ornament_color', '#CD853F')
-
-        # Draw only the circular clock face with wood texture, leaving external area transparent
-        draw.ellipse([
-            self.center_x - self.outer_radius, self.center_y -
-            self.outer_radius, self.center_x + self.outer_radius,
-            self.center_y + self.outer_radius
-        ],
-                     fill=bg_color,
-                     outline=border_color,
-                     width=4)
-
-        # Add ornamental border ring
-        ornament_radius = self.outer_radius - 15
-        draw.ellipse([
-            self.center_x - ornament_radius, self.center_y - ornament_radius,
-            self.center_x + ornament_radius, self.center_y + ornament_radius
-        ],
-                     fill=None,
-                     outline=ornament_color,
-                     width=3)
-
-        # Draw continuous light band around the perimeter for text readability
-        band_outer_radius = self.outer_radius - 15
-        band_inner_radius = self.outer_radius - 45
-
-        # Draw the continuous light band
-        draw.ellipse([
-            self.center_x - band_outer_radius, self.center_y -
-            band_outer_radius, self.center_x + band_outer_radius,
-            self.center_y + band_outer_radius
-        ],
-                     fill=(245, 245, 220, 255),
-                     outline=(101, 67, 33, 255),
-                     width=2)
-
-        # Draw inner circle to create the band effect
-        draw.ellipse([
-            self.center_x - band_inner_radius, self.center_y -
-            band_inner_radius, self.center_x + band_inner_radius,
-            self.center_y + band_inner_radius
-        ],
-                     fill=bg_color,
-                     outline=None)
-
-        # Draw zone labels in ornamental style on the light band
-        zone_angles = self._calculate_zone_angles(zones)
-        for zone in zones:
-            zone_config = self.config['zones'].get(zone, {})
-            zone_label = zone_config.get('label', zone.title())
-
-            # Draw decorative zone labels on the light band
-            self._draw_ornamental_zone_label(img, draw, zone_label,
-                                             zone_angles.get(zone, 0),
-                                             text_color, ornament_color)
-
-        # Draw ornamental center piece
-        self._draw_ornamental_center(draw, border_color, ornament_color)
-
-    def _draw_ornamental_center(self, draw: ImageDraw.Draw, border_color: str,
-                                ornament_color: str) -> None:
-        """Draw ornamental center piece like the original Weasley Clock."""
-        # Draw main center circle
-        center_radius = 20
-        draw.ellipse([
-            self.center_x - center_radius, self.center_y - center_radius,
-            self.center_x + center_radius, self.center_y + center_radius
-        ],
-                     fill=border_color,
-                     outline=ornament_color,
-                     width=3)
-
-        # Draw smaller inner circle for detail
-        inner_radius = 12
-        draw.ellipse([
-            self.center_x - inner_radius, self.center_y - inner_radius,
-            self.center_x + inner_radius, self.center_y + inner_radius
-        ],
-                     fill=ornament_color,
-                     outline=border_color,
-                     width=2)
-
-        # Draw decorative center dot
-        dot_radius = 4
-        draw.ellipse([
-            self.center_x - dot_radius, self.center_y - dot_radius,
-            self.center_x + dot_radius, self.center_y + dot_radius
-        ],
-                     fill=border_color,
-                     outline=None)
-
-    def _draw_ornamental_zone_label(self, img: Image.Image,
-                                    draw: ImageDraw.Draw, text: str,
-                                    angle: float, text_color: str,
-                                    ornament_color: str) -> None:
-        """Draw zone labels with curved text following the clock face curvature."""
-        # Load simple, readable font
+    def _get_user_info(self, entity_id: str) -> Dict:
+        """Get user information from Home Assistant entity."""
         try:
-            font = ImageFont.truetype(
-                "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 14)
-        except:
-            try:
-                font = ImageFont.truetype(
-                    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 14)
-            except:
-                font = ImageFont.load_default()
-
-        # Position labels clearly inside the clock face
-        label_radius = self.outer_radius - 30
-
-        # Draw text following the exact curvature of the clock face
-        self._draw_curved_zone_text(draw, text, angle, label_radius, font,
-                                    text_color, img)
-
-    def _draw_simple_zone_text(self, draw: ImageDraw.Draw, text: str,
-                               angle: float, radius: int,
-                               font: ImageFont.FreeTypeFont,
-                               text_color: str) -> None:
-        """Draw zone text with rotation following the clock face direction."""
-        if not text:
-            return
-
-        # Apply simple abbreviation for long zone names
-        abbreviated_text = self._abbreviate_zone_text(text)
-
-        # Calculate position around the circle
-        text_x = self.center_x + radius * math.cos(angle)
-        text_y = self.center_y + radius * math.sin(angle)
-
-        # Convert angle to degrees for text rotation following the quadrant
-        angle_degrees = math.degrees(angle)
-        normalized_angle = (angle_degrees + 360) % 360
-
-        # Determine rotation to follow the clock quadrant direction
-        if 90 <= normalized_angle <= 270:
-            # Bottom half: rotate to keep text readable (not upside down)
-            rotation_degrees = angle_degrees - 90
-        else:
-            # Top half: normal rotation perpendicular to radius
-            rotation_degrees = angle_degrees + 90
-
-        # Get text dimensions
-        bbox = draw.textbbox((0, 0), abbreviated_text, font=font)
-        text_width = bbox[2] - bbox[0]
-        text_height = bbox[3] - bbox[1]
-
-        # Create temporary image for rotated text
-        canvas_size = max(text_width, text_height) + 40
-        text_img = Image.new('RGBA', (canvas_size, canvas_size), (0, 0, 0, 0))
-        text_draw = ImageDraw.Draw(text_img)
-
-        # Draw background rectangle on temporary image
-        padding = 4
-        bg_x = (canvas_size - text_width) // 2 - padding
-        bg_y = (canvas_size - text_height) // 2 - padding
-        bg_w = text_width + 2 * padding
-        bg_h = text_height + 2 * padding
-
-        text_draw.rectangle([bg_x, bg_y, bg_x + bg_w, bg_y + bg_h],
-                            fill=(245, 245, 220, 220),
-                            outline=None)
-
-        # Draw text centered on temporary image
-        text_draw.text(((canvas_size - text_width) // 2,
-                        (canvas_size - text_height) // 2),
-                       abbreviated_text,
-                       fill='#2F1B14',
-                       font=font)
-
-        # Rotate the entire text image
-        rotated_text = text_img.rotate(-rotation_degrees, expand=True)
-
-        # Calculate final position to center the rotated text
-        final_x = int(text_x - rotated_text.width // 2)
-        final_y = int(text_y - rotated_text.height // 2)
-
-        # This method now only handles non-rotated text for backwards compatibility
-        # The rotated version is handled by _draw_rotated_zone_text
-
-    def _abbreviate_zone_text(self, text: str) -> str:
-        """Smart zone text abbreviation."""
-        if not text:
-            return text
-
-        # Convert to uppercase
-        text = text.upper()
-
-        # If short enough, return as-is
-        if len(text) <= 6:
-            return text
-
-        # Smart abbreviation for common zone patterns
-        if ' ' in text:
-            # Multi-word zones: take first letters of each word + vowels from first word
-            words = text.split()
-            if len(words) == 2:
-                # Two words: abbreviated form
-                first_word = words[0]
-                second_word = words[1]
-
-                # Take first part of first word + first letter of second
-                if len(first_word) >= 4:
-                    result = first_word[:4] + second_word[0]
-                else:
-                    result = first_word + ' ' + second_word[0]
-
-                return result[:6]
+            state = self.hass.states.get(entity_id)
+            if state:
+                attributes = getattr(state, 'attributes', {})
+                return {
+                    'name':
+                    attributes.get(
+                        'friendly_name',
+                        entity_id.split('.')[1].replace('_', ' ').title()),
+                    'image_path':
+                    attributes.get('entity_picture', ''),
+                    'zone':
+                    state.state
+                }
             else:
-                # More than two words: first letters
-                return ''.join(word[0] for word in words[:6])
-        else:
-            # Single word: intelligent truncation
-            if len(text) <= 8:
-                return text
-            else:
-                # Keep consonants and some vowels for readability
-                truncated = text[:6]
-                return truncated
-
-    def _draw_rotated_zone_text(self, main_img: Image.Image,
-                                draw: ImageDraw.Draw, text: str, angle: float,
-                                radius: int, font: ImageFont.FreeTypeFont,
-                                text_color: str) -> None:
-        """Draw zone text with simple rotation following the clock face direction."""
-        if not text:
-            return
-
-        # Apply abbreviation for long zone names
-        abbreviated_text = self._abbreviate_zone_text(text)
-
-        # Calculate position around the circle
-        text_x = self.center_x + radius * math.cos(angle)
-        text_y = self.center_y + radius * math.sin(angle)
-
-        # Convert angle to degrees for rotation
-        angle_degrees = math.degrees(angle)
-        normalized_angle = (angle_degrees + 360) % 360
-
-        # Determine rotation: normal for top half, inverted for bottom half
-        if 90 <= normalized_angle <= 270:
-            # Bottom half: rotate to keep text readable (not upside down)
-            rotation_degrees = angle_degrees - 90
-        else:
-            # Top half: normal rotation perpendicular to radius
-            rotation_degrees = angle_degrees + 90
-
-        # Get text dimensions
-        bbox = draw.textbbox((0, 0), abbreviated_text, font=font)
-        text_width = bbox[2] - bbox[0]
-        text_height = bbox[3] - bbox[1]
-
-        # Create temporary image for rotated text
-        canvas_size = max(text_width, text_height) + 40
-        text_img = Image.new('RGBA', (canvas_size, canvas_size), (0, 0, 0, 0))
-        text_draw = ImageDraw.Draw(text_img)
-
-        # Draw background rectangle
-        padding = 4
-        bg_x = (canvas_size - text_width) // 2 - padding
-        bg_y = (canvas_size - text_height) // 2 - padding
-        bg_w = text_width + 2 * padding
-        bg_h = text_height + 2 * padding
-
-        text_draw.rectangle([bg_x, bg_y, bg_x + bg_w, bg_y + bg_h],
-                            fill=(245, 245, 220, 220),
-                            outline=None)
-
-        # Draw text centered
-        text_draw.text(((canvas_size - text_width) // 2,
-                        (canvas_size - text_height) // 2),
-                       abbreviated_text,
-                       fill='#2F1B14',
-                       font=font)
-
-        # Rotate the text image
-        rotated_text = text_img.rotate(-rotation_degrees, expand=True)
-
-        # Calculate final position to center the rotated text
-        final_x = int(text_x - rotated_text.width // 2)
-        final_y = int(text_y - rotated_text.height // 2)
-
-        # Paste rotated text onto main image
-        main_img.paste(rotated_text, (final_x, final_y), rotated_text)
-
-    def _draw_rotated_readable_zone_text(self, main_img: Image.Image,
-                                         draw: ImageDraw.Draw, text: str,
-                                         angle: float, radius: int,
-                                         font: ImageFont.FreeTypeFont,
-                                         text_color: str) -> None:
-        """Draw zone text rotated to follow the circle but ALWAYS readable from left to right."""
-        if not text:
-            return
-
-        # Apply abbreviation for long zone names
-        abbreviated_text = self._abbreviate_zone_text(text)
-
-        # Calculate position around the circle
-        text_x = self.center_x + radius * math.cos(angle)
-        text_y = self.center_y + radius * math.sin(angle)
-
-        # Convert angle to degrees
-        angle_degrees = math.degrees(angle)
-        normalized_angle = (angle_degrees + 360) % 360
-
-        # Calculate rotation: follow the circle but NEVER make text upside down
-        if 90 < normalized_angle < 270:
-            # Bottom half: flip text 180° so it's readable from left to right
-            rotation_degrees = angle_degrees + 180
-        else:
-            # Top half: use normal angle
-            rotation_degrees = angle_degrees
-
-        # Apply ±90° adjustment and check if it would make text upside down
-        test_rotation = rotation_degrees + 90
-        normalized_test = (test_rotation + 360) % 360
-
-        if 90 < normalized_test < 270:
-            # If +90° would make text upside down, use -90° instead
-            rotation_degrees = rotation_degrees - 90
-        else:
-            # Otherwise use +90°
-            rotation_degrees = rotation_degrees + 90
-
-        # Get text dimensions
-        bbox = draw.textbbox((0, 0), abbreviated_text, font=font)
-        text_width = bbox[2] - bbox[0]
-        text_height = bbox[3] - bbox[1]
-
-        # Create temporary image for rotated text
-        canvas_size = max(text_width, text_height) + 40
-        text_img = Image.new('RGBA', (canvas_size, canvas_size), (0, 0, 0, 0))
-        text_draw = ImageDraw.Draw(text_img)
-
-        # Draw background rectangle
-        padding = 4
-        bg_x = (canvas_size - text_width) // 2 - padding
-        bg_y = (canvas_size - text_height) // 2 - padding
-        bg_w = text_width + 2 * padding
-        bg_h = text_height + 2 * padding
-
-        text_draw.rectangle([bg_x, bg_y, bg_x + bg_w, bg_y + bg_h],
-                            fill=(245, 245, 220, 220),
-                            outline=None)
-
-        # Draw text centered
-        text_draw.text(((canvas_size - text_width) // 2,
-                        (canvas_size - text_height) // 2),
-                       abbreviated_text,
-                       fill='#2F1B14',
-                       font=font)
-
-        # Rotate the text image
-        rotated_text = text_img.rotate(-rotation_degrees, expand=True)
-
-        # Calculate final position to center the rotated text
-        final_x = int(text_x - rotated_text.width // 2)
-        final_y = int(text_y - rotated_text.height // 2)
-
-        # Paste rotated text onto main image
-        main_img.paste(rotated_text, (final_x, final_y), rotated_text)
-
-    def _draw_straight_zone_text(self, draw: ImageDraw.Draw, text: str,
-                                 angle: float, radius: int,
-                                 font: ImageFont.FreeTypeFont,
-                                 text_color: str) -> None:
-        """Draw zone text rotated to follow the circle but always readable left-to-right."""
-        if not text:
-            return
-
-        # Apply abbreviation for long zone names
-        abbreviated_text = self._abbreviate_zone_text(text)
-
-        # Calculate position around the circle
-        text_x = self.center_x + radius * math.cos(angle)
-        text_y = self.center_y + radius * math.sin(angle)
-
-        # Convert angle to degrees
-        angle_degrees = math.degrees(angle)
-        normalized_angle = (angle_degrees + 360) % 360
-
-        # Calculate rotation: follow the circle but keep text readable
-        if 90 <= normalized_angle < 270:
-            # Bottom half: add 180° to flip text so it's readable left-to-right
-            rotation_degrees = angle_degrees + 180
-        else:
-            # Top half: use angle as-is for natural reading
-            rotation_degrees = angle_degrees
-
-        # Get text dimensions
-        bbox = draw.textbbox((0, 0), abbreviated_text, font=font)
-        text_width = bbox[2] - bbox[0]
-        text_height = bbox[3] - bbox[1]
-
-        # Create temporary image for rotated text
-        canvas_size = max(text_width, text_height) + 40
-        text_img = Image.new('RGBA', (canvas_size, canvas_size), (0, 0, 0, 0))
-        text_draw = ImageDraw.Draw(text_img)
-
-        # Draw background rectangle
-        padding = 4
-        bg_x = (canvas_size - text_width) // 2 - padding
-        bg_y = (canvas_size - text_height) // 2 - padding
-        bg_w = text_width + 2 * padding
-        bg_h = text_height + 2 * padding
-
-        text_draw.rectangle([bg_x, bg_y, bg_x + bg_w, bg_y + bg_h],
-                            fill=(245, 245, 220, 220),
-                            outline=None)
-
-        # Draw text centered
-        text_draw.text(((canvas_size - text_width) // 2,
-                        (canvas_size - text_height) // 2),
-                       abbreviated_text,
-                       fill='#2F1B14',
-                       font=font)
-
-        # Rotate the text image
-        rotated_text = text_img.rotate(-rotation_degrees, expand=True)
-
-        # Calculate final position to center the rotated text
-        final_x = int(text_x - rotated_text.width // 2)
-        final_y = int(text_y - rotated_text.height // 2)
-
-        # Create main image reference for pasting
-        if hasattr(draw, '_image'):
-            main_img = draw._image
-        else:
-            # Fallback: we need to get the main image somehow
-            # This is a PIL limitation, we might need to pass the main image
-            # For now, we'll draw without rotation as fallback
-            draw.rectangle([
-                text_x - text_width / 2 - padding, text_y - text_height / 2 -
-                padding, text_x + text_width / 2 + padding,
-                text_y + text_height / 2 + padding
-            ],
-                           fill=(245, 245, 220, 220),
-                           outline=None)
-            draw.text((text_x - text_width / 2, text_y - text_height / 2),
-                      abbreviated_text,
-                      fill='#2F1B14',
-                      font=font)
-            return
-
-        # Paste rotated text onto main image
-        main_img.paste(rotated_text, (final_x, final_y), rotated_text)
-
-    def _draw_curved_zone_text(self, draw: ImageDraw.Draw, text: str,
-                               center_angle: float, radius: int,
-                               font: ImageFont.FreeTypeFont, text_color: str,
-                               main_img: Image.Image) -> None:
-        """Draw text following the exact circular curvature of the clock face radius."""
-        if not text:
-            return
-
-        # Get font metrics for precise calculations
-        bbox = draw.textbbox((0, 0), text, font=font)
-        text_width = bbox[2] - bbox[0]
-
-        # Calculate the angular spacing based on the actual radius and character width
-        avg_char_width = text_width / len(text) if text else 1
-        angular_spacing_per_char = avg_char_width / radius  # Radians per character
-
-        # Calculate total arc length for the text
-        total_arc_angle = angular_spacing_per_char * (len(text) - 1)
-
-        # Start angle - center the text around the zone position
-        start_angle = center_angle - total_arc_angle / 2
-
-        # Draw continuous background for the entire text
-        self._draw_curved_text_background(draw, text, start_angle,
-                                          angular_spacing_per_char, radius,
-                                          font)
-
-        # Draw each character positioned along the circle
-        for i, char in enumerate(text):
-            if char == ' ':
-                continue  # Skip spaces but keep their position
-
-            # Calculate angle for this character
-            char_angle = start_angle + (i * angular_spacing_per_char)
-
-            # Position character on the circle
-            char_x = self.center_x + radius * math.cos(char_angle)
-            char_y = self.center_y + radius * math.sin(char_angle)
-
-            # Simple rotation: sempre perpendicolare al raggio,
-            # ma controllo se invertire per la parte bassa
-            angle_degrees = math.degrees(char_angle)
-            normalized_angle = (angle_degrees + 360) % 360
-
-            if 90 <= normalized_angle <= 270:
-                # Parte bassa: inverti la rotazione per evitare testo sottosopra
-                rotation_degrees = angle_degrees - 90
-            else:
-                # Parte alta: rotazione normale
-                rotation_degrees = angle_degrees + 90
-
-            # Get character dimensions
-            char_bbox = draw.textbbox((0, 0), char, font=font)
-            char_width = char_bbox[2] - char_bbox[0]
-            char_height = char_bbox[3] - char_bbox[1]
-
-            # Create temporary image for rotated character
-            temp_size = max(char_width, char_height) + 20
-            char_img = Image.new('RGBA', (temp_size, temp_size), (0, 0, 0, 0))
-            char_draw = ImageDraw.Draw(char_img)
-
-            # Draw character centered in temporary image
-            char_draw.text(((temp_size - char_width) // 2,
-                            (temp_size - char_height) // 2),
-                           char,
-                           fill='#2F1B14',
-                           font=font)
-
-            # Rotate character to follow circle tangent
-            rotated_char = char_img.rotate(-rotation_degrees, expand=True)
-
-            # Calculate final position
-            final_x = int(char_x - rotated_char.width // 2)
-            final_y = int(char_y - rotated_char.height // 2)
-
-            # Paste rotated character onto main image
-            main_img.paste(rotated_char, (final_x, final_y), rotated_char)
-
-    def _draw_curved_text_background(self, draw: ImageDraw.Draw, text: str,
-                                     start_angle: float,
-                                     angular_spacing: float, radius: int,
-                                     font: ImageFont.FreeTypeFont) -> None:
-        """Draw a curved background that follows the text path around the circle."""
-        if not text:
-            return
-
-        # Get font metrics for precise calculations
-        bbox = draw.textbbox((0, 0), text, font=font)
-        text_width = bbox[2] - bbox[0]
-
-        # Calculate the angular spacing based on the actual radius and character width
-        avg_char_width = text_width / len(text) if text else 1
-        angular_spacing_per_char = avg_char_width / radius  # Radians per character
-
-        # Calculate total arc length for the text
-        total_arc_angle = angular_spacing_per_char * (len(text) - 1)
-        end_angle = start_angle + total_arc_angle
-
-        # Calculate the points for the curved background
-        inner_radius = radius - 12  # Background extends inward from text
-        outer_radius = radius + 12  # Background extends outward from text
-
-        # Number of points for smooth curve
-        num_points = max(20, int(abs(end_angle - start_angle) * 20))
-
-        # Create points for curved background polygon
-        points = []
-
-        # Outer arc points
-        for i in range(num_points + 1):
-            angle = start_angle + (end_angle - start_angle) * i / num_points
-            x = self.center_x + outer_radius * math.cos(angle)
-            y = self.center_y + outer_radius * math.sin(angle)
-            points.append((x, y))
-
-        # Inner arc points (reverse order)
-        for i in range(num_points, -1, -1):
-            angle = start_angle + (end_angle - start_angle) * i / num_points
-            x = self.center_x + inner_radius * math.cos(angle)
-            y = self.center_y + inner_radius * math.sin(angle)
-            points.append((x, y))
-
-        # Draw the curved background senza bordatura
-        if len(points) > 3:
-            draw.polygon(points, fill=(245, 245, 220, 200), outline=None)
+                return {
+                    'name': entity_id.split('.')[1].replace('_', ' ').title(),
+                    'image_path': '',
+                    'zone': 'unknown'
+                }
+        except Exception as e:
+            _LOGGER.error(f"Error getting user info for {entity_id}: {e}")
+            return {
+                'name': entity_id.split('.')[1].replace('_', ' ').title(),
+                'image_path': '',
+                'zone': 'unknown'
+            }
 
     def _load_user_image(
         self, image_path: str, size: Tuple[int, int] = (30, 30)
@@ -1171,31 +399,221 @@ class WeasleyClockGenerator:
 
         return img
 
-    def _get_user_info(self, entity_id: str) -> Dict:
-        """Get user information from Home Assistant or config."""
-        # If auto-discovery is enabled, get info from Home Assistant
+    def _get_user_positions(self) -> Dict[str, str]:
+        """Get current positions of all tracked users."""
+        positions = {}
+
+        # Check if we should use automatic discovery or manual configuration
         if self.config.get('auto_discover_users', True):
+            # Automatically discover all person entities
             person_entities = self._get_all_person_entities()
-            # Apply filters here as well, to get correct info even if user is filtered out for position display
+            # Apply filters
             filtered_person_entities = self._apply_user_filters(
                 person_entities)
-            if entity_id in filtered_person_entities:
-                return filtered_person_entities[entity_id]
-            # If user is not found after filtering, try to get it from manual config as a fallback
-            elif entity_id in self.config.get('users', {}):
-                return self.config['users'][entity_id]
-            else:
-                return {
-                    'name': entity_id.split('.')[1].replace('_', ' ').title(),
-                    'image_path': ''
-                }
+            for entity_id, info in filtered_person_entities.items():
+                raw_zone = info['zone']
+                mapped_zone = self._map_zone_name(raw_zone)
+                positions[entity_id] = mapped_zone
+                _LOGGER.debug(
+                    f"Auto-discovered user {entity_id} is in zone: {raw_zone} -> {mapped_zone}"
+                )
         else:
-            # Fall back to manual configuration (this part might be handled better by config flow data)
-            return self.config.get('users', {}).get(
-                entity_id, {
-                    'name': entity_id.split('.')[1].replace('_', ' ').title(),
-                    'image_path': ''
-                })
+            # Use manual configuration
+            for entity_id in self.config.get('users', {}):
+                try:
+                    state = self.hass.states.get(entity_id)
+                    if state:
+                        raw_zone = state.state
+                        mapped_zone = self._map_zone_name(raw_zone)
+                        positions[entity_id] = mapped_zone
+                        _LOGGER.debug(
+                            f"Configured user {entity_id} is in zone: {raw_zone} -> {mapped_zone}"
+                        )
+                    else:
+                        _LOGGER.warning(f"Entity {entity_id} not found")
+                        positions[entity_id] = 'unknown'
+                except Exception as e:
+                    _LOGGER.error(
+                        f"Error getting position for {entity_id}: {e}")
+                    positions[entity_id] = 'unknown'
+
+        return positions
+
+    def _map_zone_name(self, ha_zone: str) -> str:
+        """Map Home Assistant zone names to display names using zone_mapping configuration."""
+        zone_mapping = self.config.get('zone_mapping', {})
+        mapped_name = zone_mapping.get(ha_zone, ha_zone)
+
+        # If no mapping found, use the zone name as-is but clean it up
+        if mapped_name == ha_zone:
+            # Clean up zone name: replace underscores with spaces and title case
+            mapped_name = ha_zone.replace('_', ' ').title()
+
+        return mapped_name
+
+    def _calculate_zone_angles(self, zones: List[str]) -> Dict[str, float]:
+        """Calculate angles for each zone segment across the full circle."""
+        zone_angles = {}
+        zone_count = len(zones)
+
+        if zone_count == 0:
+            return zone_angles
+
+        if zone_count == 1:
+            # Single zone - put it at the top (12 o'clock)
+            zone_angles[zones[0]] = math.radians(-90)
+        else:
+            # Always distribute zones across the full 360-degree circle
+            angle_step = 360.0 / zone_count
+
+            for i, zone in enumerate(zones):
+                # Partendo dalle 12 o'clock (-90° nel sistema matematico)
+                # e andando in senso orario
+                angle_degrees = -90 + (i * angle_step)
+                zone_angles[zone] = math.radians(angle_degrees)
+
+        return zone_angles
+
+    def _draw_clock_face(self, img: Image.Image, draw: ImageDraw.Draw,
+                         zones: List[str]) -> None:
+        """Draw the wooden clock face like the original Weasley Clock."""
+        style = self.config.get('clock_style', {})
+        bg_color = style.get('background_color', '#D2B48C')
+        border_color = style.get('border_color', '#8B4513')
+        text_color = style.get('text_color', '#654321')
+        ornament_color = style.get('ornament_color', '#CD853F')
+
+        # Draw only the circular clock face with wood texture, leaving external area transparent
+        draw.ellipse([
+            self.center_x - self.outer_radius, self.center_y -
+            self.outer_radius, self.center_x + self.outer_radius,
+            self.center_y + self.outer_radius
+        ],
+                     fill=bg_color,
+                     outline=border_color,
+                     width=4)
+
+        # Add ornamental border ring
+        ornament_radius = self.outer_radius - 15
+        draw.ellipse([
+            self.center_x - ornament_radius, self.center_y - ornament_radius,
+            self.center_x + ornament_radius, self.center_y + ornament_radius
+        ],
+                     fill=None,
+                     outline=ornament_color,
+                     width=3)
+
+        # Draw continuous light band around the perimeter for text readability
+        band_outer_radius = self.outer_radius - 15
+        band_inner_radius = self.outer_radius - 45
+
+        # Draw the continuous light band
+        draw.ellipse([
+            self.center_x - band_outer_radius, self.center_y -
+            band_outer_radius, self.center_x + band_outer_radius,
+            self.center_y + band_outer_radius
+        ],
+                     fill=(245, 245, 220, 255),
+                     outline=(101, 67, 33, 255),
+                     width=2)
+
+        # Draw inner circle to create the band effect
+        draw.ellipse([
+            self.center_x - band_inner_radius, self.center_y -
+            band_inner_radius, self.center_x + band_inner_radius,
+            self.center_y + band_inner_radius
+        ],
+                     fill=bg_color,
+                     outline=None)
+
+        # Draw zone labels in ornamental style on the light band
+        zone_angles = self._calculate_zone_angles(zones)
+        for zone in zones:
+            # Get the proper zone configuration
+            zone_config = self.config['zones'].get(zone, {})
+            zone_label = zone_config.get('label', zone.title())
+
+            # Apply zone mapping if available
+            zone_mapping = self.config.get('zone_mapping', {})
+            if zone in zone_mapping:
+                zone_label = zone_mapping[zone]
+
+            # Clean up the label
+            if not zone_label or zone_label == zone:
+                zone_label = zone.replace('_', ' ').title()
+
+            # Draw decorative zone labels on the light band
+            self._draw_zone_label(draw, zone_label, zone_angles.get(zone, 0),
+                                  text_color)
+
+        # Draw ornamental center piece
+        self._draw_ornamental_center(draw, border_color, ornament_color)
+
+    def _draw_zone_label(self, draw: ImageDraw.Draw, text: str, angle: float,
+                         text_color: str) -> None:
+        """Draw zone labels positioned correctly."""
+        # Load font
+        try:
+            font = ImageFont.truetype(
+                "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 14)
+        except:
+            try:
+                font = ImageFont.truetype(
+                    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 14)
+            except:
+                font = ImageFont.load_default()
+
+        # Position labels in the light band
+        label_radius = self.outer_radius - 30
+
+        # Calculate label position
+        x = self.center_x + label_radius * math.cos(angle)
+        y = self.center_y + label_radius * math.sin(angle)
+
+        # Get text dimensions
+        bbox = draw.textbbox((0, 0), text, font=font)
+        text_width = bbox[2] - bbox[0]
+        text_height = bbox[3] - bbox[1]
+
+        # Center the text
+        x -= text_width // 2
+        y -= text_height // 2
+
+        # Draw text with shadow for better readability
+        draw.text((x + 1, y + 1), text, font=font, fill='black')  # Shadow
+        draw.text((x, y), text, font=font, fill=text_color)
+
+    def _draw_ornamental_center(self, draw: ImageDraw.Draw, border_color: str,
+                                ornament_color: str) -> None:
+        """Draw ornamental center piece like the original Weasley Clock."""
+        # Draw main center circle
+        center_radius = 20
+        draw.ellipse([
+            self.center_x - center_radius, self.center_y - center_radius,
+            self.center_x + center_radius, self.center_y + center_radius
+        ],
+                     fill=border_color,
+                     outline=ornament_color,
+                     width=3)
+
+        # Draw smaller inner circle for detail
+        inner_radius = 12
+        draw.ellipse([
+            self.center_x - inner_radius, self.center_y - inner_radius,
+            self.center_x + inner_radius, self.center_y + inner_radius
+        ],
+                     fill=ornament_color,
+                     outline=border_color,
+                     width=2)
+
+        # Draw decorative center dot
+        dot_radius = 4
+        draw.ellipse([
+            self.center_x - dot_radius, self.center_y - dot_radius,
+            self.center_x + dot_radius, self.center_y + dot_radius
+        ],
+                     fill=border_color,
+                     outline=None)
 
     def _calculate_hand_positions(self, user_positions: Dict[str, str],
                                   zones: List[str]) -> Dict[str, Dict]:
@@ -1283,86 +701,111 @@ class WeasleyClockGenerator:
 
                 for i, user_data in enumerate(users):
                     user_config = user_data['user_config']
-                    image_path = user_config.get('image_path')
+                    image_path = user_config.get('image_path', '')
+                    user_name = user_config.get('name', 'User')
 
-                    # Load user image - let _load_user_image handle all the path logic
+                    # Calculate position first
+                    img_radius = max(image_size) // 2
+
+                    if len(users) == 1:
+                        # Single user - position maintaining always 15px of visible tip
+                        min_tip_visible = 15
+                        distance_from_tip = img_radius + min_tip_visible
+                        img_x = x - distance_from_tip * math.cos(angle)
+                        img_y = y - distance_from_tip * math.sin(angle)
+                    else:
+                        # Multiple users - position along hand maintaining always visible tip
+                        min_tip_visible = 15
+                        base_distance = img_radius + min_tip_visible + (
+                            i * (img_radius * 2 + 10))
+
+                        # Calculate position along hand line
+                        img_x = x - base_distance * math.cos(angle)
+                        img_y = y - base_distance * math.sin(angle)
+
+                    # Always draw golden oval frame first
+                    self._draw_golden_oval_frame(draw, img_x, img_y,
+                                                 image_size)
+                    self._load_user_image(
+                        image_path, size=image_size) if image_path else None
+                    # Try to load user image
                     user_img = self._load_user_image(image_path,
                                                      size=image_size)
 
                     if user_img:
-                        # Calcola la dimensione dell'immagine per il calcolo della distanza
-                        img_radius = max(image_size) // 2
-
-                        if len(users) == 1:
-                            # Singolo utente - posiziona mantenendo sempre 15px di punta visibile
-                            min_tip_visible = 15
-                            distance_from_tip = img_radius + min_tip_visible
-                            img_x = x - distance_from_tip * math.cos(angle)
-                            img_y = y - distance_from_tip * math.sin(angle)
-                        else:
-                            # Utenti multipli - posiziona lungo la lancetta mantenendo sempre la punta visibile
-                            min_tip_visible = 15
-                            base_distance = img_radius + min_tip_visible + (
-                                i * (img_radius * 2 + 10))
-
-                            # Calcola la posizione lungo la linea della lancetta
-                            img_x = x - base_distance * math.cos(angle)
-                            img_y = y - base_distance * math.sin(angle)
-
-                        # Center the image at calculated position
+                        # User has image - draw it
                         final_x = int(img_x - user_img.width // 2)
                         final_y = int(img_y - user_img.height // 2)
 
-                        # Draw golden oval frame like original
-                        self._draw_golden_oval_frame(draw, img_x, img_y,
-                                                     image_size)
-
-                        # Paste user image with transparency
-                        image.paste(user_img, (final_x, final_y), user_img)
+                        # Ensure coordinates are within image bounds
+                        if (final_x >= 0 and final_y >= 0
+                                and final_x + user_img.width <= image.width
+                                and final_y + user_img.height <= image.height):
+                            image.paste(user_img, (final_x, final_y), user_img)
+                            _LOGGER.debug(
+                                f"Pasted user image for {user_name} at ({final_x}, {final_y})"
+                            )
+                        else:
+                            _LOGGER.warning(
+                                f"User image for {user_name} would be outside bounds, drawing placeholder"
+                            )
+                            self._draw_user_placeholder(
+                                draw, img_x, img_y, image_size, user_name)
+                    else:
+                        # No image available - draw placeholder with initials
+                        _LOGGER.debug(
+                            f"No image found for {user_name}, drawing placeholder"
+                        )
+                        self._draw_user_placeholder(draw, img_x, img_y,
+                                                    image_size, user_name)
 
     def _draw_ornamental_hand(self, draw: ImageDraw.Draw, angle: float,
                               x: float, y: float, hand_color: str,
                               ornament_color: str) -> None:
-        """Draw ornamental clock hand like the original Weasley Clock."""
+        """Draw ornamental clock hand like the original Weasley Clock with clear arrow tip."""
         # Draw main hand shaft - thicker and more elegant
-        shaft_width = 6
+        shaft_width = 4
+        shaft_length = math.sqrt(
+            (x - self.center_x)**2 +
+            (y - self.center_y)**2) - 20  # Leave space for arrow
+
+        # Calculate shaft end point (before arrow)
+        shaft_end_x = self.center_x + shaft_length * math.cos(angle)
+        shaft_end_y = self.center_y + shaft_length * math.sin(angle)
+
+        # Draw shaft as thick line
         for offset in range(-shaft_width // 2, shaft_width // 2 + 1):
             offset_x = offset * math.sin(angle)
             offset_y = -offset * math.cos(angle)
             draw.line([
                 self.center_x + offset_x, self.center_y + offset_y,
-                x + offset_x, y + offset_y
+                shaft_end_x + offset_x, shaft_end_y + offset_y
             ],
                       fill=hand_color,
-                      width=1)
+                      width=2)
 
-        # Draw ornamental arrowhead like original
-        arrow_length = 15
-        arrow_width = 8
+        # Draw clear, well-defined arrowhead at the tip
+        arrow_length = 20
 
-        # Calculate ornamental arrow points
+        # Calculate arrow points with clear separation
         tip_x = x
         tip_y = y
 
-        # Arrow base points
-        base_angle1 = angle + math.pi / 2
-        base_angle2 = angle - math.pi / 2
+        # Arrow base points - make arrow more pronounced
+        base_angle1 = angle + (2 * math.pi / 3)  # 120 degrees
+        base_angle2 = angle - (2 * math.pi / 3)  # -120 degrees
 
-        base1_x = x - arrow_length * math.cos(angle) + arrow_width * math.cos(
-            base_angle1)
-        base1_y = y - arrow_length * math.sin(angle) + arrow_width * math.sin(
-            base_angle1)
-        base2_x = x - arrow_length * math.cos(angle) + arrow_width * math.cos(
-            base_angle2)
-        base2_y = y - arrow_length * math.sin(angle) + arrow_width * math.sin(
-            base_angle2)
+        base1_x = tip_x + arrow_length * math.cos(base_angle1)
+        base1_y = tip_y + arrow_length * math.sin(base_angle1)
+        base2_x = tip_x + arrow_length * math.cos(base_angle2)
+        base2_y = tip_y + arrow_length * math.sin(base_angle2)
 
-        # Draw elegant arrowhead
+        # Draw sharp, distinct arrowhead
         arrow_points = [(tip_x, tip_y), (base1_x, base1_y), (base2_x, base2_y)]
         draw.polygon(arrow_points,
                      fill=hand_color,
                      outline=ornament_color,
-                     width=2)
+                     width=3)
 
     def _draw_golden_oval_frame(self, draw: ImageDraw.Draw, center_x: float,
                                 center_y: float, image_size: tuple) -> None:
@@ -1386,7 +829,58 @@ class WeasleyClockGenerator:
                      outline=ornament_color,
                      width=3)
 
-    def generate_clock_image(self, output_path: Optional[str] = None) -> str:
+    def _draw_user_placeholder(self, draw: ImageDraw.Draw, center_x: float,
+                               center_y: float, image_size: tuple,
+                               user_name: str) -> None:
+        """Draw a placeholder with user initials when no image is available."""
+        # Create initials from user name
+        initials = ''.join(
+            [word[0].upper() for word in user_name.split()[:2] if word])
+        if not initials:
+            initials = 'U'  # Fallback to 'U' for User
+
+        # Load font for initials
+        try:
+            font_size = image_size[0] // 3  # Scale font to image size
+            font = ImageFont.truetype(
+                "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+                font_size)
+        except:
+            try:
+                font_size = image_size[0] // 3
+                font = ImageFont.truetype(
+                    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+                    font_size)
+            except:
+                font = ImageFont.load_default()
+
+        # Calculate text position to center it
+        bbox = draw.textbbox((0, 0), initials, font=font)
+        text_width = bbox[2] - bbox[0]
+        text_height = bbox[3] - bbox[1]
+
+        text_x = center_x - text_width // 2
+        text_y = center_y - text_height // 2
+
+        # Draw background circle for initials (slightly smaller than oval)
+        circle_radius = min(image_size) // 2 - 2
+        circle_x1 = center_x - circle_radius
+        circle_y1 = center_y - circle_radius
+        circle_x2 = center_x + circle_radius
+        circle_y2 = center_y + circle_radius
+
+        # Draw circle with user-friendly color
+        draw.ellipse([circle_x1, circle_y1, circle_x2, circle_y2],
+                     fill='#87CEEB',
+                     outline='#4682B4',
+                     width=2)
+
+        # Draw initials
+        draw.text((text_x, text_y), initials, font=font, fill='#2F4F4F')
+
+    def generate_clock_image(self,
+                             output_path: Optional[str] = None,
+                             force_regeneration: bool = False) -> str:
         """Generate the complete Weasley Clock image."""
         try:
             # Get current user positions
@@ -1433,14 +927,19 @@ class WeasleyClockGenerator:
             image_data = image_bytes.getvalue()
             current_hash = hashlib.md5(image_data).hexdigest()
 
-            # Check if image actually changed
-            if self.last_image_hash and current_hash == self.last_image_hash:
+            # Check if image actually changed (skip if force_regeneration is True)
+            if not force_regeneration and self.last_image_hash and current_hash == self.last_image_hash:
                 _LOGGER.debug(f"Image unchanged, hash: {current_hash}")
                 return output_path  # Return just the path for consistency
             else:
                 self.last_image_hash = current_hash
-                _LOGGER.debug(f"Image changed, new hash: {current_hash}")
-                # Save the new image only if it changed
+                if force_regeneration:
+                    _LOGGER.info(
+                        f"Force regeneration requested, updating image: {output_path}"
+                    )
+                else:
+                    _LOGGER.debug(f"Image changed, new hash: {current_hash}")
+                # Save the new image (always save if force_regeneration is True)
                 image.save(output_path, 'PNG', quality=95)
                 _LOGGER.info(f"Weasley Clock image updated: {output_path}")
                 return output_path  # Return just the path for consistency
@@ -1453,40 +952,19 @@ class WeasleyClockGenerator:
 def generate_weasley_clock(hass, call):
     """Service call handler for generating Weasley Clock image."""
     try:
-        # Configuration is now managed through the config entry, not direct service data for paths.
-        # For this service call, we might not need config_path and output_path directly if the
-        # generator correctly reads the config from the config entry.
-        # If specific overrides are needed, they could be passed here, but the intention is to
-        # use the configured values.
-
-        # Retrieve config entry ID for the Weasley Clock integration
-        config_entry_id = None
+        # Get the first Weasley Clock config entry
+        config_entry = None
         for entry in hass.config_entries.async_entries('weasley_clock'):
-            config_entry_id = entry.entry_id
-            break  # Assuming only one config entry for Weasley Clock
+            config_entry = entry
+            break
 
-        if not config_entry_id:
+        if not config_entry:
             _LOGGER.error("Weasley Clock config entry not found.")
-            # Optionally, use a default if no config entry is found, or raise an error.
-            # For now, we'll proceed assuming the generator can use defaults.
-            generator = WeasleyClockGenerator(hass)
-        else:
-            # Get the config data from the config entry
-            config_entry = hass.config_entries.async_get_entry(config_entry_id)
-            if config_entry and config_entry.data:
-                generator = WeasleyClockGenerator(hass)
-                # Update the generator's config with data from the entry
-                generator.config = generator._build_config_from_entry(
-                    config_entry.data)
-            else:
-                _LOGGER.error(
-                    f"Could not retrieve data for Weasley Clock config entry {config_entry_id}."
-                )
-                generator = WeasleyClockGenerator(
-                    hass)  # Use defaults if config is missing
+            return
 
-        # The output path is now read from the generator's config, which is populated from the config entry.
-        result_path = generator.generate_clock_image()
+        # Create generator with config entry data
+        generator = WeasleyClockGenerator(hass, config_entry.data)
+        result_path = generator.generate_clock_image(force_regeneration=True)
 
         # Update the timestamp sensor state
         current_time = datetime.now()

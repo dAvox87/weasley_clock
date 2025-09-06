@@ -176,14 +176,13 @@ class WeasleyClockUpdateCoordinator(DataUpdateCoordinator):
             # Store previous hash to detect changes
             previous_hash = getattr(self.generator, 'last_image_hash', None)
 
-            # Generate new image
+            # Generate new image with force regeneration
             image_path = await self.hass.async_add_executor_job(
-                self.generator.generate_clock_image
+                self.generator.generate_clock_image, None, True  # force_regeneration=True
             )
 
-            # Check if image actually changed
-            current_hash = getattr(self.generator, 'last_image_hash', None)
-            image_changed = previous_hash != current_hash
+            # Always consider image changed when manually triggered
+            image_changed = True
 
             # Only update timestamp if image actually changed
             if image_changed:
