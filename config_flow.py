@@ -1,4 +1,3 @@
-
 import logging
 from typing import Any
 
@@ -9,7 +8,11 @@ from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResult
 from homeassistant.helpers import selector
 
-from .const import DOMAIN, NAME
+from .const import (
+    DOMAIN, NAME, DEFAULT_CLOCK_WIDTH, DEFAULT_CLOCK_HEIGHT,
+    DEFAULT_UPDATE_INTERVAL_SECONDS, MIN_UPDATE_INTERVAL_SECONDS, 
+    MAX_UPDATE_INTERVAL_SECONDS
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -71,11 +74,11 @@ class WeasleyClockConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             bool,
             vol.Optional("auto_update_enabled", default=True):
             bool,
-            vol.Optional("update_interval_seconds", default=30):
-            vol.All(vol.Coerce(int), vol.Range(min=10, max=300)),
-            vol.Optional("clock_width", default=400):
+            vol.Optional("update_interval_seconds", default=DEFAULT_UPDATE_INTERVAL_SECONDS):
+            vol.All(vol.Coerce(int), vol.Range(min=MIN_UPDATE_INTERVAL_SECONDS, max=MAX_UPDATE_INTERVAL_SECONDS)),
+            vol.Optional("clock_width", default=DEFAULT_CLOCK_WIDTH):
             vol.All(vol.Coerce(int), vol.Range(min=200, max=800)),
-            vol.Optional("clock_height", default=448):
+            vol.Optional("clock_height", default=DEFAULT_CLOCK_HEIGHT):
             vol.All(vol.Coerce(int), vol.Range(min=200, max=800)),
         })
 

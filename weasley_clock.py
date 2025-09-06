@@ -13,6 +13,11 @@ from typing import Dict, List, Tuple, Optional
 from datetime import datetime
 
 from homeassistant.core import HomeAssistant
+from .const import (
+    DEFAULT_CLOCK_WIDTH, DEFAULT_CLOCK_HEIGHT, DEFAULT_OUTER_RADIUS, 
+    DEFAULT_INNER_RADIUS, DEFAULT_USER_IMAGE_RADIUS, DEFAULT_FONT_SIZE,
+    DEFAULT_UPDATE_INTERVAL_SECONDS, DEFAULT_OUTPUT_PATH
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -34,33 +39,38 @@ class WeasleyClockGenerator:
     def __init__(self, hass: HomeAssistant, config_data: dict = None):
         """Initialize the Weasley Clock generator with Home Assistant instance."""
         self.hass = hass
-        self.width = 448
-        self.height = 448
-        # Center will be calculated dynamically based on zone optimization
-        self.center_x = None
-        self.center_y = None
-        # Calculate radius based on the smaller dimension to use full available space
-        min_dimension = min(self.width, self.height)
-        self.outer_radius = int(
-            (min_dimension - 40) // 2)  # Leave 20px margin on each side
-        self.inner_radius = max(40, self.outer_radius //
-                                6)  # Scale inner radius proportionally
-        # Use default configuration (no file loading in event loop)
+        
+        # Usa le dimensioni dalla configurazione o le costanti come fallback
         if config_data:
+            self.width = config_data.get('clock_width', DEFAULT_CLOCK_WIDTH)
+            self.height = config_data.get('clock_height', DEFAULT_CLOCK_HEIGHT)
             self.config = self._build_config_from_entry(config_data)
         else:
+            self.width = DEFAULT_CLOCK_WIDTH
+            self.height = DEFAULT_CLOCK_HEIGHT
             self.config = self._get_default_config()
-        self.last_image_hash = None  # Track image changes
+        
+        # Center will be calculated dynamically
+        self.center_x = None
+        self.center_y = None
+        
+        # Usa costanti per il calcolo dei raggi
+        min_dimension = min(self.width, self.height)
+        margin = 40  # Puoi aggiungere DEFAULT_MARGIN nelle costanti
+        self.outer_radius = config_data.get('outer_radius', int((min_dimension - margin) // 2)) if config_data else DEFAULT_OUTER_RADIUS
+        self.inner_radius = config_data.get('inner_radius', max(DEFAULT_INNER_RADIUS, self.outer_radius // 6)) if config_data else DEFAULT_INNER_RADIUS
+        
+        self.last_image_hash = None
 
     def _get_default_config(self):
-        """Get minimal default configuration - everything else managed via config flow."""
+        """Get minimal default configuration using constants."""
         return {
             "auto_discover_users": True,
             "auto_update_enabled": True,
-            "update_interval_seconds": 30,
-            "output_path": '/config/www/weasley_clock.png',
+            "update_interval_seconds": DEFAULT_UPDATE_INTERVAL_SECONDS,
+            "output_path": f'{DEFAULT_OUTPUT_PATH}.png',
             "zone_mapping": {},
-            "zones": {},  # Empty - populated by config flow
+            "zones": {},
             "clock_style": {
                 "background_color": '#D2B48C',
                 "border_color": '#8B4513',
@@ -261,9 +271,12 @@ class WeasleyClockGenerator:
             }
 
     def _load_user_image(
-        self, image_path: str, size: Tuple[int, int] = (30, 30)
+        self, image_path: str, size: Tuple[int, int] = None
     ) -> Optional[Image.Image]:
         """Load and resize user image from Home Assistant entity_picture or local path."""
+        if size is None:
+            size = (DEFAULT_USER_IMAGE_RADIUS * 2, DEFAULT_USER_IMAGE_RADIUS * 2)
+
         if not image_path:
             return self._create_default_user_image(size)
 
@@ -552,14 +565,14 @@ class WeasleyClockGenerator:
     def _draw_zone_label(self, draw: ImageDraw.Draw, text: str, angle: float,
                          text_color: str) -> None:
         """Draw zone labels positioned correctly."""
-        # Load font
+        # Usa costante per font size
+        font_size = self.config.get('font_size', DEFAULT_FONT_SIZE)
         try:
-            font = ImageFont.truetype(
-                "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 14)
+            font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", font_size)
         except:
             try:
                 font = ImageFont.truetype(
-                    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 14)
+                    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", font_size)
             except:
                 font = ImageFont.load_default()
 

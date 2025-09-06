@@ -19,6 +19,7 @@ DEFAULT_CLOCK_WIDTH = 448
 DEFAULT_CLOCK_HEIGHT = 448
 DEFAULT_OUTER_RADIUS = 180
 DEFAULT_INNER_RADIUS = 40
+DEFAULT_MARGIN = 40  # Aggiunto
 
 # Image sizes
 DEFAULT_USER_IMAGE_RADIUS = 30
@@ -29,3 +30,13 @@ MAX_USER_IMAGE_RADIUS = 50
 DEFAULT_FONT_SIZE = 14
 MIN_FONT_SIZE = 8
 MAX_FONT_SIZE = 24
+
+# Clock styling defaults (aggiunto)
+DEFAULT_CLOCK_STYLE = {
+    "background_color": '#D2B48C',
+    "border_color": '#8B4513',
+    "text_color": '#654321',
+    "hand_color": '#2F1B14',
+    "oval_color": '#F5DEB3',
+    "ornament_color": '#CD853F'
+}

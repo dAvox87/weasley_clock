@@ -27,13 +27,21 @@ class WeasleyClockUpdateCoordinator(DataUpdateCoordinator):
     def __init__(self, hass: HomeAssistant, config_entry: ConfigEntry) -> None:
         """Initialize the coordinator."""
         self.config_entry = config_entry
+        
+        # Usa costanti e configurazioni
+        auto_update_enabled = config_entry.data.get("auto_update_enabled", True)
         update_interval = config_entry.data.get("update_interval_seconds", DEFAULT_UPDATE_INTERVAL_SECONDS)
-
+        
+        if auto_update_enabled:
+            update_interval_timedelta = timedelta(seconds=update_interval)
+        else:
+            update_interval_timedelta = None  # Disabilita aggiornamenti automatici
+        
         super().__init__(
             hass,
             _LOGGER,
             name=DOMAIN,
-            update_interval=timedelta(seconds=update_interval),
+            update_interval=update_interval_timedelta,
         )
         # Create the clock generator with config entry data
         self.generator = WeasleyClockGenerator(hass, config_entry.data)
