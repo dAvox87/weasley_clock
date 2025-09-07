@@ -15,8 +15,17 @@ from datetime import datetime
 from homeassistant.core import HomeAssistant
 from .const import (
     DEFAULT_CLOCK_WIDTH, DEFAULT_CLOCK_HEIGHT, DEFAULT_OUTER_RADIUS, 
-    DEFAULT_INNER_RADIUS, DEFAULT_USER_IMAGE_RADIUS, DEFAULT_FONT_SIZE,
-    DEFAULT_UPDATE_INTERVAL_SECONDS, DEFAULT_OUTPUT_PATH
+    DEFAULT_INNER_RADIUS, MIN_USER_IMAGE_RADIUS, MAX_USER_IMAGE_RADIUS,
+    DEFAULT_UPDATE_INTERVAL_SECONDS, DEFAULT_OUTPUT_PATH, MIN_FONT_SIZE,
+    MAX_FONT_SIZE, DEFAULT_TEXT_TEMP_IMAGE_WIDTH, DEFAULT_TEXT_TEMP_IMAGE_HEIGHT,
+    DEFAULT_TEXT_COLOR, DEFAULT_TEXT_OUTLINE_COLOR, DEFAULT_TEXT_OUTLINE_OFFSETS,
+    DEFAULT_LABEL_RADIUS_OFFSET, DEFAULT_CLOCK_STYLE, DEFAULT_MARGIN,
+    DEFAULT_ORNAMENT_COLOR, DEFAULT_OVAL_COLOR, DEFAULT_BORDER_COLOR,
+    REDUCTION_FACTOR_USER, REDUCTION_FACTOR_FONT, DEFAULT_HAND_BASE_WIDTH,
+    DEFAULT_HAND_TIP_WIDTH, DEFAULT_CENTER_RADIUS,
+    DEFAULT_INNER_CENTER_RADIUS, DEFAULT_CENTER_DOT_RADIUS, DEFAULT_BAND_OUTER_OFFSET,
+    DEFAULT_BAND_INNER_OFFSET, DEFAULT_MIN_TIP_VISIBLE, DEFAULT_USER_SPACING,
+    DEFAULT_FRAME_WIDTH
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -56,7 +65,7 @@ class WeasleyClockGenerator:
         
         # Usa costanti per il calcolo dei raggi
         min_dimension = min(self.width, self.height)
-        margin = 40  # Puoi aggiungere DEFAULT_MARGIN nelle costanti
+        margin = DEFAULT_MARGIN
         self.outer_radius = config_data.get('outer_radius', int((min_dimension - margin) // 2)) if config_data else DEFAULT_OUTER_RADIUS
         self.inner_radius = config_data.get('inner_radius', max(DEFAULT_INNER_RADIUS, self.outer_radius // 6)) if config_data else DEFAULT_INNER_RADIUS
         
@@ -71,14 +80,7 @@ class WeasleyClockGenerator:
             "output_path": f'{DEFAULT_OUTPUT_PATH}.png',
             "zone_mapping": {},
             "zones": {},
-            "clock_style": {
-                "background_color": '#D2B48C',
-                "border_color": '#8B4513',
-                "text_color": '#654321',
-                "hand_color": '#2F1B14',
-                "oval_color": '#F5DEB3',
-                "ornament_color": '#CD853F'
-            },
+            "clock_style": DEFAULT_CLOCK_STYLE, 
             "user_filters": {
                 "excluded_users": [],
                 "included_users": [],
@@ -101,14 +103,7 @@ class WeasleyClockGenerator:
             config_data.get("zone_mapping", {}),
             "zones":
             config_data.get("zones", {}),
-            "clock_style": {
-                "background_color": '#D2B48C',
-                "border_color": '#8B4513',
-                "text_color": '#654321',
-                "hand_color": '#2F1B14',
-                "oval_color": '#F5DEB3',
-                "ornament_color": '#CD853F'
-            },
+            "clock_style": config_data.get("clock_style", DEFAULT_CLOCK_STYLE), 
             "user_filters":
             config_data.get(
                 "user_filters", {
@@ -275,7 +270,8 @@ class WeasleyClockGenerator:
     ) -> Optional[Image.Image]:
         """Load and resize user image from Home Assistant entity_picture or local path."""
         if size is None:
-            size = (DEFAULT_USER_IMAGE_RADIUS * 2, DEFAULT_USER_IMAGE_RADIUS * 2)
+            # Usa MAX_USER_IMAGE_RADIUS come fallback per singoli utenti
+            size = (MAX_USER_IMAGE_RADIUS * 2, MAX_USER_IMAGE_RADIUS * 2)
 
         if not image_path:
             return self._create_default_user_image(size)
@@ -490,6 +486,9 @@ class WeasleyClockGenerator:
     def _draw_clock_face(self, img: Image.Image, draw: ImageDraw.Draw,
                          zones: List[str]) -> None:
         """Draw the wooden clock face like the original Weasley Clock."""
+        # Salva il riferimento all'immagine per il testo curvato
+        self.image = img
+
         style = self.config.get('clock_style', {})
         bg_color = style.get('background_color', '#D2B48C')
         border_color = style.get('border_color', '#8B4513')
@@ -507,7 +506,7 @@ class WeasleyClockGenerator:
                      width=4)
 
         # Add ornamental border ring
-        ornament_radius = self.outer_radius - 15
+        ornament_radius = self.outer_radius - DEFAULT_BAND_OUTER_OFFSET
         draw.ellipse([
             self.center_x - ornament_radius, self.center_y - ornament_radius,
             self.center_x + ornament_radius, self.center_y + ornament_radius
@@ -517,8 +516,8 @@ class WeasleyClockGenerator:
                      width=3)
 
         # Draw continuous light band around the perimeter for text readability
-        band_outer_radius = self.outer_radius - 15
-        band_inner_radius = self.outer_radius - 45
+        band_outer_radius = self.outer_radius - DEFAULT_BAND_OUTER_OFFSET
+        band_inner_radius = self.outer_radius - DEFAULT_BAND_INNER_OFFSET
 
         # Draw the continuous light band
         draw.ellipse([
@@ -555,52 +554,174 @@ class WeasleyClockGenerator:
             if not zone_label or zone_label == zone:
                 zone_label = zone.replace('_', ' ').title()
 
-            # Draw decorative zone labels on the light band
+            # Draw decorative zone labels on the light band with curved text
             self._draw_zone_label(draw, zone_label, zone_angles.get(zone, 0),
                                   text_color)
 
         # Draw ornamental center piece
         self._draw_ornamental_center(draw, border_color, ornament_color)
 
+    def _draw_text_along_arc(self, draw: ImageDraw.Draw, text: str,
+                   center_x: float, center_y: float, radius: int,
+                   start_angle: float, font: ImageFont.FreeTypeFont,
+                   color: str, main_img: Image.Image) -> None:
+        """Disegna il testo lungo un arco, sempre leggibile dall'esterno"""
+        
+        # Normalizza l'angolo tra 0 e 360
+        angle_deg = start_angle % 360
+        if angle_deg < 0:
+            angle_deg += 360
+        
+        # Determina la posizione per il testo
+        # Per le zone nella parte inferiore, posiziona il testo leggermente più interno
+        # Per le zone nella parte superiore, posiziona il testo leggermente più esterno
+        
+        if 45 <= angle_deg <= 135:  # Lato destro
+            text_radius = radius + 10
+            text_angle = angle_deg + 90  # Ruota per essere tangente
+        elif 135 <= angle_deg <= 225:  # Parte inferiore
+            text_radius = radius - 20
+            text_angle = angle_deg - 90  # Ruota per essere leggibile dal basso
+            # Inverti il testo per la leggibilità
+            text = text[::-1]
+        elif 225 <= angle_deg <= 315:  # Lato sinistro
+            text_radius = radius + 10
+            text_angle = angle_deg + 90
+        else:  # Parte superiore (315-45)
+            text_radius = radius + 10
+            text_angle = angle_deg + 90
+
+        # Calcola la posizione base del testo
+        text_x = center_x + text_radius * math.cos(math.radians(start_angle))
+        text_y = center_y + text_radius * math.sin(math.radians(start_angle))
+
+        # Crea un'immagine temporanea per il testo
+        temp_img = Image.new('RGBA', (200, 50), (0, 0, 0, 0))
+        temp_draw = ImageDraw.Draw(temp_img)
+        
+        # Disegna il testo centrato nell'immagine temporanea
+        bbox = temp_draw.textbbox((0, 0), text, font=font)
+        text_width = bbox[2] - bbox[0]
+        text_height = bbox[3] - bbox[1]
+        
+        temp_draw.text(((200 - text_width) // 2, (50 - text_height) // 2), 
+                       text, font=font, fill=color)
+
+        # Ruota l'immagine temporanea
+        rotated_temp = temp_img.rotate(-text_angle, expand=True)
+
+        # Incolla l'immagine ruotata
+        paste_x = int(text_x - rotated_temp.width // 2)
+        paste_y = int(text_y - rotated_temp.height // 2)
+        
+        if (paste_x >= 0 and paste_y >= 0 and 
+            paste_x + rotated_temp.width <= main_img.width and 
+            paste_y + rotated_temp.height <= main_img.height):
+            main_img.paste(rotated_temp, (paste_x, paste_y), rotated_temp)
+
     def _draw_zone_label(self, draw: ImageDraw.Draw, text: str, angle: float,
-                         text_color: str) -> None:
-        """Draw zone labels positioned correctly."""
-        # Usa costante per font size
-        font_size = self.config.get('font_size', DEFAULT_FONT_SIZE)
-        try:
-            font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", font_size)
-        except:
+                     text_color: str) -> None:
+        """Draw zone labels positioned correctly with adaptive font sizing."""
+        
+        # Calcola la dimensione del font ottimale per il testo
+        font_size = self._calculate_optimal_font_size(text)
+        
+        # Font migliori per schermi, in ordine di preferenza
+        font_paths = [
+            "/usr/share/fonts/truetype/roboto/Roboto-Bold.ttf",
+            "/usr/share/fonts/truetype/roboto/RobotoCondensed-Bold.ttf",
+            "/usr/share/fonts/truetype/noto/NotoSans-Bold.ttf",
+            "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+            "/usr/share/fonts/truetype/ubuntu/Ubuntu-Bold.ttf",
+            "/usr/share/fonts/truetype/inter/Inter-Bold.ttf"
+        ]
+        
+        font = None
+        for font_path in font_paths:
             try:
-                font = ImageFont.truetype(
-                    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", font_size)
-            except:
-                font = ImageFont.load_default()
+                font = ImageFont.truetype(font_path, font_size)
+                _LOGGER.debug(f"Successfully loaded font: {font_path} at size {font_size}")
+                break
+            except (OSError, IOError):
+                continue
+        
+        if font is None:
+            font = ImageFont.load_default()
+            _LOGGER.warning("Using system default font as fallback")
 
         # Position labels in the light band
-        label_radius = self.outer_radius - 30
+        label_radius = self.outer_radius - DEFAULT_LABEL_RADIUS_OFFSET
 
-        # Calculate label position
+        # Calcola la posizione del testo
         x = self.center_x + label_radius * math.cos(angle)
         y = self.center_y + label_radius * math.sin(angle)
 
-        # Get text dimensions
-        bbox = draw.textbbox((0, 0), text, font=font)
+        # Usa costanti per le dimensioni dell'immagine temporanea
+        temp_img = Image.new('RGBA', (DEFAULT_TEXT_TEMP_IMAGE_WIDTH, DEFAULT_TEXT_TEMP_IMAGE_HEIGHT), (0, 0, 0, 0))
+        temp_draw = ImageDraw.Draw(temp_img)
+        
+        # Disegna il testo centrato nell'immagine temporanea
+        bbox = temp_draw.textbbox((0, 0), text, font=font)
         text_width = bbox[2] - bbox[0]
         text_height = bbox[3] - bbox[1]
+        
+        # Usa costanti per i colori
+        text_color = DEFAULT_TEXT_COLOR
+        outline_color = DEFAULT_TEXT_OUTLINE_COLOR
+        
+        # Calcola posizione centrata
+        text_x = (DEFAULT_TEXT_TEMP_IMAGE_WIDTH - text_width) // 2
+        text_y = (DEFAULT_TEXT_TEMP_IMAGE_HEIGHT - text_height) // 2
+               
+        # Usa costante per gli offset dell'outline
+        for offset_x, offset_y in DEFAULT_TEXT_OUTLINE_OFFSETS:
+            temp_draw.text((text_x + offset_x, text_y + offset_y), 
+                           text, font=font, fill=outline_color)
+        
+        # Disegna il testo principale sopra l'outline
+        temp_draw.text((text_x, text_y), text, font=font, fill=text_color)
 
-        # Center the text
-        x -= text_width // 2
-        y -= text_height // 2
+        # Converti l'angolo della lancetta in gradi
+        angle_deg = math.degrees(angle)
+        
+        # Logica di rotazione
+        if 0 <= angle_deg <= 180:  # Lato destro
+            text_rotation = angle_deg - 90
+        else:  # Lato sinistro (180°-360°)
+            text_rotation = angle_deg + 90
 
-        # Draw text with shadow for better readability
-        draw.text((x + 1, y + 1), text, font=font, fill='black')  # Shadow
-        draw.text((x, y), text, font=font, fill=text_color)
+        # Ruota l'immagine temporanea
+        rotated_temp = temp_img.rotate(-text_rotation, expand=True)
+
+        # Incolla l'immagine ruotata
+        paste_x = int(x - rotated_temp.width // 2)
+        paste_y = int(y - rotated_temp.height // 2)
+        
+        if (paste_x >= 0 and paste_y >= 0 and 
+            paste_x + rotated_temp.width <= self.image.width and 
+            paste_y + rotated_temp.height <= self.image.height):
+            self.image.paste(rotated_temp, (paste_x, paste_y), rotated_temp)
+
+    def _calculate_optimal_font_size(self, text: str) -> int:
+        """Calculate optimal font size based on text length and available space."""
+        text_length = len(text)
+        
+        if text_length <= 4:
+            calculated_size = MAX_FONT_SIZE
+        else:
+            # Formula: riduzione progressiva per ogni gruppo di 4 caratteri
+            reduction_groups = (text_length - 1) // 4
+            reduction_factor = REDUCTION_FACTOR_FONT* reduction_groups
+            calculated_size = int(MAX_FONT_SIZE * (1 - reduction_factor))
+        
+        return calculated_size if calculated_size >= MIN_FONT_SIZE else MIN_FONT_SIZE
 
     def _draw_ornamental_center(self, draw: ImageDraw.Draw, border_color: str,
                                 ornament_color: str) -> None:
         """Draw ornamental center piece like the original Weasley Clock."""
         # Draw main center circle
-        center_radius = 20
+        center_radius = DEFAULT_CENTER_RADIUS
         draw.ellipse([
             self.center_x - center_radius, self.center_y - center_radius,
             self.center_x + center_radius, self.center_y + center_radius
@@ -610,7 +731,7 @@ class WeasleyClockGenerator:
                      width=3)
 
         # Draw smaller inner circle for detail
-        inner_radius = 12
+        inner_radius = DEFAULT_INNER_CENTER_RADIUS
         draw.ellipse([
             self.center_x - inner_radius, self.center_y - inner_radius,
             self.center_x + inner_radius, self.center_y + inner_radius
@@ -620,7 +741,7 @@ class WeasleyClockGenerator:
                      width=2)
 
         # Draw decorative center dot
-        dot_radius = 4
+        dot_radius = DEFAULT_CENTER_DOT_RADIUS
         draw.ellipse([
             self.center_x - dot_radius, self.center_y - dot_radius,
             self.center_x + dot_radius, self.center_y + dot_radius
@@ -653,11 +774,18 @@ class WeasleyClockGenerator:
 
                 # Add zone to config for styling (use unknown zone styling)
                 if zone not in self.config['zones']:
-                    # Check if we have a mapping for this zone
+                    # CORREZIONE: Usa il nome della zona mappata per la visualizzazione
                     zone_mapping = self.config.get('zone_mapping', {})
-                    display_name = zone_mapping.get(
-                        zone,
-                        zone.replace('_', ' ').title())
+                    
+                    # Cerca il mapping inverso - trova la chiave originale che mappa a questa zona
+                    original_zone = None
+                    for orig_key, mapped_value in zone_mapping.items():
+                        if mapped_value == zone:
+                            original_zone = orig_key
+                            break
+                    
+                    # Se non trova mapping inverso, usa il nome della zona pulito
+                    display_name = zone.replace('_', ' ').title()
 
                     self.config['zones'][zone] = {
                         'label': display_name,
@@ -692,11 +820,10 @@ class WeasleyClockGenerator:
         return zone_hands
 
     def _draw_user_hands(self, draw: ImageDraw.Draw, image: Image.Image,
-                         zone_hands: Dict[str, Dict]) -> None:
+                     zone_hands: Dict[str, Dict]) -> None:
         """Draw ornamental clock hands like the original Weasley Clock."""
         style = self.config.get('clock_style', {})
-        hand_color = style.get('hand_color',
-                               '#2F1B14')  # Dark brown/black like original
+        hand_color = style.get('hand_color', '#2F1B14')
         ornament_color = style.get('ornament_color', '#CD853F')
 
         for zone, hand_data in zone_hands.items():
@@ -705,12 +832,13 @@ class WeasleyClockGenerator:
             users = hand_data['users']
 
             # Draw ornamental clock hand like original
-            self._draw_ornamental_hand(draw, angle, x, y, hand_color,
-                                       ornament_color)
+            self._draw_ornamental_hand(draw, angle, x, y, hand_color, ornament_color)
 
-            # Place user images in golden ovals like the original
+            # Place user images with dynamic sizing
             if users:
-                image_size = (40, 40) if len(users) > 1 else (50, 50)
+                # Calcola la dimensione dinamica delle immagini utente
+                image_radius = self._calculate_user_image_radius(len(users))
+                image_size = (image_radius * 2, image_radius * 2)
 
                 for i, user_data in enumerate(users):
                     user_config = user_data['user_config']
@@ -718,32 +846,27 @@ class WeasleyClockGenerator:
                     user_name = user_config.get('name', 'User')
 
                     # Calculate position first
-                    img_radius = max(image_size) // 2
+                    img_radius = image_radius
 
                     if len(users) == 1:
                         # Single user - position maintaining always 15px of visible tip
-                        min_tip_visible = 15
-                        distance_from_tip = img_radius + min_tip_visible
+                        distance_from_tip = img_radius + DEFAULT_MIN_TIP_VISIBLE
                         img_x = x - distance_from_tip * math.cos(angle)
                         img_y = y - distance_from_tip * math.sin(angle)
                     else:
                         # Multiple users - position along hand maintaining always visible tip
-                        min_tip_visible = 15
-                        base_distance = img_radius + min_tip_visible + (
-                            i * (img_radius * 2 + 10))
+                        base_distance = img_radius + DEFAULT_MIN_TIP_VISIBLE + (
+                            i * (img_radius * 2 + DEFAULT_USER_SPACING))
 
                         # Calculate position along hand line
                         img_x = x - base_distance * math.cos(angle)
                         img_y = y - base_distance * math.sin(angle)
 
                     # Always draw golden oval frame first
-                    self._draw_golden_oval_frame(draw, img_x, img_y,
-                                                 image_size)
-                    self._load_user_image(
-                        image_path, size=image_size) if image_path else None
+                    self._draw_golden_oval_frame(draw, img_x, img_y, image_size)
+                    
                     # Try to load user image
-                    user_img = self._load_user_image(image_path,
-                                                     size=image_size)
+                    user_img = self._load_user_image(image_path, size=image_size)
 
                     if user_img:
                         # User has image - draw it
@@ -756,7 +879,7 @@ class WeasleyClockGenerator:
                                 and final_y + user_img.height <= image.height):
                             image.paste(user_img, (final_x, final_y), user_img)
                             _LOGGER.debug(
-                                f"Pasted user image for {user_name} at ({final_x}, {final_y})"
+                                f"Pasted user image for {user_name} at ({final_x}, {final_y}) with radius {image_radius}"
                             )
                         else:
                             _LOGGER.warning(
@@ -769,127 +892,12 @@ class WeasleyClockGenerator:
                         _LOGGER.debug(
                             f"No image found for {user_name}, drawing placeholder"
                         )
-                        self._draw_user_placeholder(draw, img_x, img_y,
-                                                    image_size, user_name)
+                        self._draw_user_placeholder(draw, img_x, img_y, image_size, user_name)
 
-    def _draw_ornamental_hand(self, draw: ImageDraw.Draw, angle: float,
-                              x: float, y: float, hand_color: str,
-                              ornament_color: str) -> None:
-        """Draw ornamental clock hand like the original Weasley Clock with clear arrow tip."""
-        # Draw main hand shaft - thicker and more elegant
-        shaft_width = 4
-        shaft_length = math.sqrt(
-            (x - self.center_x)**2 +
-            (y - self.center_y)**2) - 20  # Leave space for arrow
-
-        # Calculate shaft end point (before arrow)
-        shaft_end_x = self.center_x + shaft_length * math.cos(angle)
-        shaft_end_y = self.center_y + shaft_length * math.sin(angle)
-
-        # Draw shaft as thick line
-        for offset in range(-shaft_width // 2, shaft_width // 2 + 1):
-            offset_x = offset * math.sin(angle)
-            offset_y = -offset * math.cos(angle)
-            draw.line([
-                self.center_x + offset_x, self.center_y + offset_y,
-                shaft_end_x + offset_x, shaft_end_y + offset_y
-            ],
-                      fill=hand_color,
-                      width=2)
-
-        # Draw clear, well-defined arrowhead at the tip
-        arrow_length = 20
-
-        # Calculate arrow points with clear separation
-        tip_x = x
-        tip_y = y
-
-        # Arrow base points - make arrow more pronounced
-        base_angle1 = angle + (2 * math.pi / 3)  # 120 degrees
-        base_angle2 = angle - (2 * math.pi / 3)  # -120 degrees
-
-        base1_x = tip_x + arrow_length * math.cos(base_angle1)
-        base1_y = tip_y + arrow_length * math.sin(base_angle1)
-        base2_x = tip_x + arrow_length * math.cos(base_angle2)
-        base2_y = tip_y + arrow_length * math.sin(base_angle2)
-
-        # Draw sharp, distinct arrowhead
-        arrow_points = [(tip_x, tip_y), (base1_x, base1_y), (base2_x, base2_y)]
-        draw.polygon(arrow_points,
-                     fill=hand_color,
-                     outline=ornament_color,
-                     width=3)
-
-    def _draw_golden_oval_frame(self, draw: ImageDraw.Draw, center_x: float,
-                                center_y: float, image_size: tuple) -> None:
-        """Draw golden oval frame for user photos like the original."""
-        style = self.config.get('clock_style', {})
-        oval_color = style.get('oval_color', '#F5DEB3')
-        ornament_color = style.get('ornament_color', '#CD853F')
-
-        # Calculate oval dimensions slightly larger than image
-        oval_width = image_size[0] + 8
-        oval_height = image_size[1] + 8
-
-        # Draw golden oval background
-        oval_x1 = center_x - oval_width / 2
-        oval_y1 = center_y - oval_height / 2
-        oval_x2 = center_x + oval_width / 2
-        oval_y2 = center_y + oval_height / 2
-
-        draw.ellipse([oval_x1, oval_y1, oval_x2, oval_y2],
-                     fill=oval_color,
-                     outline=ornament_color,
-                     width=3)
-
-    def _draw_user_placeholder(self, draw: ImageDraw.Draw, center_x: float,
-                               center_y: float, image_size: tuple,
-                               user_name: str) -> None:
-        """Draw a placeholder with user initials when no image is available."""
-        # Create initials from user name
-        initials = ''.join(
-            [word[0].upper() for word in user_name.split()[:2] if word])
-        if not initials:
-            initials = 'U'  # Fallback to 'U' for User
-
-        # Load font for initials
-        try:
-            font_size = image_size[0] // 3  # Scale font to image size
-            font = ImageFont.truetype(
-                "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-                font_size)
-        except:
-            try:
-                font_size = image_size[0] // 3
-                font = ImageFont.truetype(
-                    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-                    font_size)
-            except:
-                font = ImageFont.load_default()
-
-        # Calculate text position to center it
-        bbox = draw.textbbox((0, 0), initials, font=font)
-        text_width = bbox[2] - bbox[0]
-        text_height = bbox[3] - bbox[1]
-
-        text_x = center_x - text_width // 2
-        text_y = center_y - text_height // 2
-
-        # Draw background circle for initials (slightly smaller than oval)
-        circle_radius = min(image_size) // 2 - 2
-        circle_x1 = center_x - circle_radius
-        circle_y1 = center_y - circle_radius
-        circle_x2 = center_x + circle_radius
-        circle_y2 = center_y + circle_radius
-
-        # Draw circle with user-friendly color
-        draw.ellipse([circle_x1, circle_y1, circle_x2, circle_y2],
-                     fill='#87CEEB',
-                     outline='#4682B4',
-                     width=2)
-
-        # Draw initials
-        draw.text((text_x, text_y), initials, font=font, fill='#2F4F4F')
+    def _calculate_user_image_radius(self, user_count: int) -> int:
+        """Calculate optimal user image radius based on number of users in the same zone."""
+        imageradius = int(MAX_USER_IMAGE_RADIUS * (1 - (user_count - 1) * REDUCTION_FACTOR_USER))
+        return imageradius if imageradius >= MIN_USER_IMAGE_RADIUS else MIN_USER_IMAGE_RADIUS
 
     def generate_clock_image(self,
                              output_path: Optional[str] = None,
@@ -961,6 +969,110 @@ class WeasleyClockGenerator:
             _LOGGER.error(f"Error generating Weasley Clock image: {e}")
             raise
 
+    def _draw_ornamental_hand(self, draw: ImageDraw.Draw, angle: float, tip_x: float, tip_y: float, 
+                         hand_color: str, ornament_color: str) -> None:
+        """Draw ornamental clock hand like the original Weasley Clock."""
+        # Calculate hand base position (at center)
+        base_x = self.center_x
+        base_y = self.center_y
+        
+        # Calculate hand length
+        hand_length = math.sqrt((tip_x - base_x)**2 + (tip_y - base_y)**2)
+        
+        # Hand width parameters
+        base_width = DEFAULT_HAND_BASE_WIDTH
+        tip_width = DEFAULT_HAND_TIP_WIDTH
+        
+        # Calculate perpendicular direction for hand width
+        perp_angle = angle + math.pi / 2
+        
+        # Calculate hand outline points
+        # Base points (wider)
+        base_left_x = base_x + (base_width / 2) * math.cos(perp_angle)
+        base_left_y = base_y + (base_width / 2) * math.sin(perp_angle)
+        base_right_x = base_x - (base_width / 2) * math.cos(perp_angle)
+        base_right_y = base_y - (base_width / 2) * math.sin(perp_angle)
+        
+        # Tip points (narrower)
+        tip_left_x = tip_x + (tip_width / 2) * math.cos(perp_angle)
+        tip_left_y = tip_y + (tip_width / 2) * math.sin(perp_angle)
+        tip_right_x = tip_x - (tip_width / 2) * math.cos(perp_angle)
+        tip_right_y = tip_y - (tip_width / 2) * math.sin(perp_angle)
+        
+        # Draw main hand body (tapered rectangle)
+        hand_points = [
+            (base_left_x, base_left_y),
+            (tip_left_x, tip_left_y),
+            (tip_x, tip_y),  # Pointed tip
+            (tip_right_x, tip_right_y),
+            (base_right_x, base_right_y)
+        ]
+        
+        draw.polygon(hand_points, fill=hand_color, outline=ornament_color, width=2)
+        
+        # Draw ornamental details
+        # Center circle at base
+        center_radius = 6
+        draw.ellipse([
+            base_x - center_radius, base_y - center_radius,
+            base_x + center_radius, base_y + center_radius
+        ], fill=ornament_color, outline=hand_color, width=1)
+        
+        # Decorative line along hand center
+        mid_length = hand_length * 0.7
+        mid_x = base_x + mid_length * math.cos(angle)
+        mid_y = base_y + mid_length * math.sin(angle)
+        draw.line([(base_x, base_y), (mid_x, mid_y)], fill=ornament_color, width=1)
+
+    def _draw_golden_oval_frame(self, draw: ImageDraw.Draw, center_x: float, center_y: float, 
+                           image_size: Tuple[int, int]) -> None:
+        """Draw golden oval frame around user image."""
+        radius = image_size[0] // 2
+        frame_width = DEFAULT_FRAME_WIDTH
+        
+        # Outer golden circle
+        draw.ellipse([
+            center_x - radius - frame_width, center_y - radius - frame_width,
+            center_x + radius + frame_width, center_y + radius + frame_width
+        ], fill=None, outline=DEFAULT_ORNAMENT_COLOR, width=frame_width)
+        
+        # Inner highlight circle
+        draw.ellipse([
+            center_x - radius - 1, center_y - radius - 1,
+            center_x + radius + 1, center_y + radius + 1
+        ], fill=None, outline=DEFAULT_OVAL_COLOR, width=1)
+
+    def _draw_user_placeholder(self, draw: ImageDraw.Draw, center_x: float, center_y: float,
+                          image_size: Tuple[int, int], user_name: str) -> None:
+        """Draw user placeholder with initials when no image is available."""
+        radius = image_size[0] // 2
+        
+        # Draw background circle
+        draw.ellipse([
+            center_x - radius, center_y - radius,
+            center_x + radius, center_y + radius
+        ], fill=DEFAULT_ORNAMENT_COLOR, outline=DEFAULT_BORDER_COLOR, width=2)
+        
+        # Draw user initials
+        initials = ''.join([word[0].upper() for word in user_name.split() if word][:2])
+        
+        # Calculate font size for initials
+        font_size = max(8, radius // 2)
+        try:
+            font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", font_size)
+        except:
+            font = ImageFont.load_default()
+        
+        # Get text size
+        bbox = draw.textbbox((0, 0), initials, font=font)
+        text_width = bbox[2] - bbox[0]
+        text_height = bbox[3] - bbox[1]
+        
+        # Draw initials centered
+        text_x = center_x - text_width // 2
+        text_y = center_y - text_height // 2
+        
+        draw.text((text_x, text_y), initials, font=font, fill=DEFAULT_TEXT_COLOR)
 
 def generate_weasley_clock(hass, call):
     """Service call handler for generating Weasley Clock image."""
