@@ -35,6 +35,7 @@
         "title": "🗺️ Configurazione Zone",
         "description": "{discovered_zones}\n\n{zones_help}",
         "data": {}
+        
       },
       "appearance": {
         "title": "🎨 Configurazione Finale",

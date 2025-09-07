@@ -1,3 +1,4 @@
+
 import logging
 from typing import Any
 
@@ -8,11 +9,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResult
 from homeassistant.helpers import selector
 
-from .const import (
-    DOMAIN, NAME, DEFAULT_CLOCK_WIDTH, DEFAULT_CLOCK_HEIGHT,
-    DEFAULT_UPDATE_INTERVAL_SECONDS, MIN_UPDATE_INTERVAL_SECONDS, 
-    MAX_UPDATE_INTERVAL_SECONDS
-)
+from .const import DOMAIN, NAME
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -74,11 +71,11 @@ class WeasleyClockConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             bool,
             vol.Optional("auto_update_enabled", default=True):
             bool,
-            vol.Optional("update_interval_seconds", default=DEFAULT_UPDATE_INTERVAL_SECONDS):
-            vol.All(vol.Coerce(int), vol.Range(min=MIN_UPDATE_INTERVAL_SECONDS, max=MAX_UPDATE_INTERVAL_SECONDS)),
-            vol.Optional("clock_width", default=DEFAULT_CLOCK_WIDTH):
+            vol.Optional("update_interval_seconds", default=30):
+            vol.All(vol.Coerce(int), vol.Range(min=10, max=300)),
+            vol.Optional("clock_width", default=400):
             vol.All(vol.Coerce(int), vol.Range(min=200, max=800)),
-            vol.Optional("clock_height", default=DEFAULT_CLOCK_HEIGHT):
+            vol.Optional("clock_height", default=448):
             vol.All(vol.Coerce(int), vol.Range(min=200, max=800)),
         })
 
@@ -386,7 +383,7 @@ class WeasleyClockConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     if zone not in zone_priority:
                         zone_priority.append(zone)
 
-                actual_zones = zone_priority[:min(len(zone_priority), 8)]
+                actual_zones = zone_priority  # Supporta tutte le zone dinamicamente
                 
                 # Process zone names from user input
                 i = 0
@@ -575,6 +572,12 @@ class WeasleyClockConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             vol.Required("output_path",
                          default="/config/www/weasley_clock.png"):
             str,
+            vol.Optional("min_font_size", default=14):
+            vol.All(vol.Coerce(int), vol.Range(min=8, max=20)),
+            vol.Optional("max_font_size", default=38):
+            vol.All(vol.Coerce(int), vol.Range(min=20, max=60)),
+            vol.Optional("font_reduction_factor", default=0.15):
+            vol.All(vol.Coerce(float), vol.Range(min=0.05, max=0.30)),
         })
 
         return self.async_show_form(
@@ -582,7 +585,7 @@ class WeasleyClockConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             data_schema=data_schema,
             errors=errors,
             description_placeholders={
-                "final_step": "🎨 **Configurazione finale completata!**\n\n📁 L'immagine dell'orologio sarà salvata nel percorso specificato\n🌐 Assicurati che il percorso inizi con `/config/www/` per essere accessibile via web\n🖼️ Il file deve avere estensione `.png`"
+                "final_step": "🎨 **Configurazione finale completata!**\n\n📁 L'immagine dell'orologio sarà salvata nel percorso specificato\n🌐 Assicurati che il percorso inizi con `/config/www/` per essere accessibile via web\n🖼️ Il file deve avere estensione `.png`\n\n📝 **Configurazione Font Etichette Zone:**\n• Font Minimo: dimensione minima del testo delle zone\n• Font Massimo: dimensione massima del testo delle zone\n• Fattore Riduzione: quanto ridurre il font per testi lunghi (0.15 = 15% per ogni gruppo di 4 caratteri)"
             }
         )
 
@@ -602,6 +605,12 @@ class WeasleyClockConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             "output_path":
             self.config_data.get("output_path",
                                  "/config/www/weasley_clock.png"),
+            "min_font_size":
+            self.config_data.get("min_font_size", 14),
+            "max_font_size":
+            self.config_data.get("max_font_size", 38),
+            "font_reduction_factor":
+            self.config_data.get("font_reduction_factor", 0.15),
         }
 
         # Parse manual users if configured
@@ -674,6 +683,10 @@ class WeasleyClockConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         
         # Start from the beginning with existing data pre-filled
         return await self.async_step_user(user_input)
+    
+    def _get_reconfigure_entry(self):
+        """Get the config entry being reconfigured."""
+        return self.hass.config_entries.async_get_entry(self.context["entry_id"])
 
     def _validate_config(self, config: dict[str, Any]) -> bool:
         """Validate the final configuration."""
