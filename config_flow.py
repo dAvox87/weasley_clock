@@ -1,4 +1,3 @@
-
 import logging
 from typing import Any
 
@@ -54,21 +53,13 @@ class WeasleyClockConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 
                 if not errors:
                     self.config_data.update(user_input)
-
-                    # Se auto discovery è disabilitata, vai alla configurazione manuale utenti
-                    if not user_input.get("auto_discover_users", True):
-                        return await self.async_step_manual_users()
-
-                    # Se auto discovery è abilitata, vai alla configurazione filtri utenti
-                    return await self.async_step_user_filters()
+                    return await self.async_step_select_users()
                     
             except Exception as e:
                 _LOGGER.error(f"Error in user step: {e}")
                 errors["base"] = "unknown"
 
         data_schema = vol.Schema({
-            vol.Optional("auto_discover_users", default=True):
-            bool,
             vol.Optional("auto_update_enabled", default=True):
             bool,
             vol.Optional("update_interval_seconds", default=30):
@@ -88,180 +79,63 @@ class WeasleyClockConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             }
         )
 
-    async def async_step_manual_users(self,
+    async def async_step_select_users(self,
                                       user_input: dict[str, Any] | None = None
                                       ) -> FlowResult:
-        """Configure manual users."""
+        """Select users and add weasleyclock tag to them."""
         errors = {}
 
         if user_input is not None:
             try:
-                users_config = user_input.get("users_config", "").strip()
-                if not users_config:
-                    errors["users_config"] = "users_required"
-                else:
-                    # Validate user configuration format
-                    valid_users = 0
-                    for line in users_config.split('\n'):
-                        line = line.strip()
-                        if line and ',' in line:
-                            parts = line.split(',')
-                            if len(parts) >= 3:
-                                entity_id, name, image_path = parts[0].strip(), parts[1].strip(), parts[2].strip()
-                                if entity_id.startswith('person.') and name and image_path:
-                                    valid_users += 1
-                    
-                    if valid_users == 0:
-                        errors["users_config"] = "invalid_format"
-                    else:
-                        self.config_data["manual_users"] = user_input
-                        return await self.async_step_zones()
-                        
-            except Exception as e:
-                _LOGGER.error(f"Error in manual_users step: {e}")
-                errors["base"] = "unknown"
-
-        # Ottieni tutte le entità person disponibili con informazioni complete
-        person_entities = []
-        suggested_config = []
-
-        try:
-            person_entity_ids = self.hass.states.async_entity_ids("person")
-        except Exception:
-            person_entity_ids = []
-
-        for entity_id in person_entity_ids:
-            try:
-                state = self.hass.states.get(entity_id)
-                if state and state.attributes:
-                    friendly_name = state.attributes.get(
-                        "friendly_name",
-                        entity_id.split('.')[1].replace('_', ' ').title())
-                    entity_picture = state.attributes.get("entity_picture", "")
-                    current_zone = state.state
-
-                    person_entities.append((entity_id, friendly_name,
-                                            current_zone, entity_picture))
-
-                    # Suggerisci configurazione precompilata
-                    image_path = entity_picture if entity_picture else f"/config/www/images/{entity_id.split('.')[1]}.jpg"
-                    suggested_config.append(
-                        f"{entity_id},{friendly_name},{image_path}")
-            except Exception as e:
-                _LOGGER.warning(
-                    f"Error processing person entity {entity_id}: {e}")
-                continue
-
-        # Pre-compila il campo con la configurazione suggerita
-        default_config = "\n".join(suggested_config) if suggested_config else "person.esempio,Nome Persona,/config/www/images/esempio.jpg"
-
-        data_schema = vol.Schema({
-            vol.Required("users_config", default=default_config):
-            selector.TextSelector(
-                selector.TextSelectorConfig(
-                    type=selector.TextSelectorType.TEXT, 
-                    multiline=True
-                ))
-        })
-
-        # Crea informazioni dettagliate sugli utenti trovati
-        persons_info = []
-        if person_entities:
-            persons_info.append("👥 **Utenti trovati nel sistema:**")
-            for entity_id, name, zone, picture in person_entities:
-                picture_info = f" 📷 {picture}" if picture else " ❌ Nessuna foto"
-                persons_info.append(
-                    f"• **{name}** ({entity_id})")
-                persons_info.append(f"  📍 Attualmente: {zone}")
-                persons_info.append(f"  {picture_info}")
-        else:
-            persons_info.append("❌ **Nessun utente person trovato nel sistema**")
-            persons_info.append("Assicurati di aver configurato delle entità person in Home Assistant")
-
-        return self.async_show_form(
-            step_id="manual_users",
-            data_schema=data_schema,
-            errors=errors,
-            description_placeholders={
-                "available_persons": "\n".join(persons_info),
-                "format_help": "📝 **Formato richiesto:** `entity_id,Nome Display,Percorso Immagine`\n\n✅ Il campo è già precompilato con tutti gli utenti trovati\n🖼️ Assicurati che le immagini esistano nel percorso specificato"
-            },
-        )
-
-    async def async_step_user_filters(self,
-                                      user_input: dict[str, Any] | None = None
-                                      ) -> FlowResult:
-        """Configure user filters when auto discovery is enabled."""
-        errors = {}
-
-        if user_input is not None:
-            try:
-                # Processa i checkbox degli utenti - deve gestire anche i valori di default
-                included_users = []
+                # Get selected users
+                selected_users = []
                 
-                # Prima ottieni tutti gli utenti disponibili per controllare i default
+                # Collect all person entities and check which ones are selected
                 try:
                     person_entity_ids = self.hass.states.async_entity_ids("person")
                 except Exception:
                     person_entity_ids = []
 
-                person_entities = []
                 for entity_id in person_entity_ids:
-                    try:
-                        state = self.hass.states.get(entity_id)
-                        if state and state.attributes:
-                            friendly_name = state.attributes.get(
-                                "friendly_name",
-                                entity_id.split('.')[1].replace('_', ' ').title())
-                            entity_picture = state.attributes.get("entity_picture", "")
-                            person_entities.append((entity_id, friendly_name, entity_picture))
-                    except Exception:
-                        continue
-
-                # Processa ogni utente controllando sia user_input che default
-                for entity_id, friendly_name, picture in person_entities:
                     checkbox_key = f"include_{entity_id}"
-                    
-                    # Calcola il valore di default (stesso algoritmo usato nello schema)
-                    name_lower = friendly_name.lower()
-                    seems_device = ('_' in name_lower
-                                    or any(char.isdigit() for char in friendly_name)
-                                    or name_lower in [
-                                        'device', 'system', 'admin', 'guest', 'unknown'
-                                    ] or len(friendly_name) < 3)
-                    has_custom_image = bool(picture)
-                    suggested_default = has_custom_image or not seems_device
-                    
-                    # Usa il valore da user_input se presente, altrimenti usa il default
-                    is_selected = user_input.get(checkbox_key, suggested_default)
-                    
-                    if is_selected:
-                        included_users.append(entity_id)
+                    if user_input.get(checkbox_key, False):
+                        selected_users.append(entity_id)
 
-                if not included_users:
+                if not selected_users:
                     errors["base"] = "no_users_selected"
                 else:
-                    self.config_data["user_filters"] = {
-                        "selected_users": included_users,
-                        "exclude_local_only": user_input.get("exclude_local_only", True)
-                    }
+                    # Add weasleyclock tag to selected users
+                    for entity_id in selected_users:
+                        try:
+                            state = self.hass.states.get(entity_id)
+                            if state:
+                                current_tags = list(state.attributes.get('tags', []) or [])
+                                if 'weasleyclock' not in current_tags:
+                                    current_tags.append('weasleyclock')
+                                    # Update person entity with new tag
+                                    self.hass.states.async_set(
+                                        entity_id,
+                                        state.state,
+                                        {**state.attributes, 'tags': current_tags}
+                                    )
+                                    _LOGGER.info(f"Added weasleyclock tag to {entity_id}")
+                        except Exception as e:
+                            _LOGGER.error(f"Error adding tag to {entity_id}: {e}")
+
+                    self.config_data["selected_users"] = selected_users
                     return await self.async_step_zones()
                     
             except Exception as e:
-                _LOGGER.error(f"Error in user_filters step: {e}")
+                _LOGGER.error(f"Error in select_users step: {e}")
                 errors["base"] = "unknown"
 
-        # Scopri tutte le entità person nel sistema
+        # Get all person entities
         person_entities = []
-
+        
         try:
             person_entity_ids = self.hass.states.async_entity_ids("person")
         except Exception:
             person_entity_ids = []
-
-        if not person_entity_ids:
-            # Nessun utente trovato, vai direttamente alle zone con messaggio
-            return await self.async_step_zones()
 
         for entity_id in person_entity_ids:
             try:
@@ -272,55 +146,47 @@ class WeasleyClockConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         entity_id.split('.')[1].replace('_', ' ').title())
                     entity_picture = state.attributes.get("entity_picture", "")
                     current_zone = state.state
+                    
+                    # Check if already has weasleyclock tag
+                    has_tag = 'weasleyclock' in (state.attributes.get('tags') or [])
 
                     person_entities.append((entity_id, friendly_name,
-                                            current_zone, entity_picture))
+                                          current_zone, entity_picture, has_tag))
             except Exception as e:
                 _LOGGER.warning(
                     f"Error processing person entity {entity_id}: {e}")
                 continue
 
-        # Crea schema dinamico con checkbox per ogni utente
+        # Create dynamic schema with checkboxes
         schema_dict = {}
-
-        # Aggiungi opzione generale
-        schema_dict[vol.Optional("exclude_local_only", default=True)] = bool
-
-        # Aggiungi checkbox per ogni utente (includi di default quelli con foto)
-        for entity_id, friendly_name, zone, picture in person_entities:
-            # Determina se suggerire l'inclusione di default
-            name_lower = friendly_name.lower()
-            seems_device = ('_' in name_lower
-                            or any(char.isdigit() for char in friendly_name)
-                            or name_lower in [
-                                'device', 'system', 'admin', 'guest', 'unknown'
-                            ] or len(friendly_name) < 3)
-            has_custom_image = bool(picture)
-            suggested = has_custom_image or not seems_device
-
+        
+        for entity_id, friendly_name, zone, picture, has_tag in person_entities:
+            # Pre-select if already has tag
             schema_dict[vol.Optional(f"include_{entity_id}",
-                                     default=suggested)] = bool
+                                     default=has_tag)] = bool
 
         data_schema = vol.Schema(schema_dict)
 
-        # Crea informazioni per l'utente
+        # Create user info
         user_info = []
-        user_info.append("👥 **Seleziona gli utenti da mostrare nell'orologio:**")
+        user_info.append("👥 **Seleziona gli utenti da tracciare con l'orologio:**")
         user_info.append("")
-        for entity_id, name, zone, picture in person_entities:
+        for entity_id, name, zone, picture, has_tag in person_entities:
             pic_info = "📷" if picture else "❌"
+            tag_info = "✅ Tag presente" if has_tag else "❌ Nessun tag"
             user_info.append(f"{pic_info} **{name}**")
             user_info.append(f"    📍 Attualmente: {zone}")
             user_info.append(f"    🆔 ID: {entity_id}")
+            user_info.append(f"    🏷️ {tag_info}")
             user_info.append("")
 
         return self.async_show_form(
-            step_id="user_filters",
+            step_id="select_users",
             data_schema=data_schema,
             errors=errors,
             description_placeholders={
                 "discovered_users": "\n".join(user_info),
-                "selection_help": "✅ **Gli utenti con foto sono pre-selezionati**\n📱 Disabilita 'Escludi utenti solo locali' se vuoi includere dispositivi che non escono mai di casa",
+                "selection_help": "✅ **Seleziona gli utenti da tracciare**\n🏷️ Il tag 'weasleyclock' verrà aggiunto automaticamente",
             },
         )
 
@@ -332,10 +198,10 @@ class WeasleyClockConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         if user_input is not None:
             try:
-                # Collect zone configurations using zone list from previous step
+                # Collect zone configurations
                 zone_configs = []
                 
-                # Get discovered zones from previous processing
+                # Get discovered zones from selected users
                 discovered_zones = set()
                 zones_usage = {}
 
@@ -347,7 +213,7 @@ class WeasleyClockConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 for entity_id in person_entity_ids:
                     try:
                         state = self.hass.states.get(entity_id)
-                        if state and state.attributes:
+                        if state and 'weasleyclock' in (state.attributes.get('tags') or []):
                             zone = state.state
                             discovered_zones.add(zone)
                     except Exception:
@@ -383,7 +249,7 @@ class WeasleyClockConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     if zone not in zone_priority:
                         zone_priority.append(zone)
 
-                actual_zones = zone_priority  # Supporta tutte le zone dinamicamente
+                actual_zones = zone_priority
                 
                 # Process zone names from user input
                 i = 0
@@ -408,7 +274,7 @@ class WeasleyClockConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 _LOGGER.error(f"Error in zones step: {e}")
                 errors["base"] = "unknown"
 
-        # Scopri automaticamente le zone utilizzate dalle persone nel sistema
+        # Discover zones from users with weasleyclock tag
         discovered_zones = set()
         zones_usage = {}
 
@@ -420,7 +286,7 @@ class WeasleyClockConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         for entity_id in person_entity_ids:
             try:
                 state = self.hass.states.get(entity_id)
-                if state and state.attributes:
+                if state and 'weasleyclock' in (state.attributes.get('tags') or []):
                     zone = state.state
                     friendly_name = state.attributes.get(
                         "friendly_name",
@@ -435,7 +301,7 @@ class WeasleyClockConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     f"Error processing person entity {entity_id}: {e}")
                 continue
 
-        # Ottieni anche le zone definite in Home Assistant
+        # Get zones defined in Home Assistant
         try:
             zone_entity_ids = self.hass.states.async_entity_ids("zone")
         except Exception:
@@ -452,12 +318,12 @@ class WeasleyClockConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     f"Error processing zone entity {entity_id}: {e}")
                 continue
 
-        # Aggiungi sempre le zone di base
+        # Add basic zones
         basic_zones = ['home', 'not_home', 'unknown']
         for basic_zone in basic_zones:
             discovered_zones.add(basic_zone)
 
-        # Prepara zone suggerite con priorità a quelle più utilizzate
+        # Prepare suggested zones with priority
         zone_priority = []
         for zone in ['home', 'not_home']:
             if zone in discovered_zones:
@@ -470,10 +336,9 @@ class WeasleyClockConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         if not zone_priority:
             zone_priority = ["home", "work", "school", "gym"]
 
-        # Crea schema dinamico con solo i nomi editabili
-        # Gli ID zone saranno mostrati nelle description_placeholders
+        # Create dynamic schema
         schema_dict = {}
-        actual_zones = zone_priority  # RIMUOVO IL LIMITE: mostra TUTTE le zone trovate
+        actual_zones = zone_priority
         
         for i, zone in enumerate(actual_zones):
             display_name = zone.replace('_', ' ').title()
@@ -482,7 +347,6 @@ class WeasleyClockConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             elif zone == 'home':
                 display_name = 'Casa'
 
-            # Mostra l'ID zona direttamente nel label del campo
             field_label = f"📍 {zone} → Nome visualizzato"
             schema_dict[vol.Required(f"zone_{i}_name", default=display_name, description=field_label)] = selector.TextSelector(
                 selector.TextSelectorConfig(
@@ -491,7 +355,7 @@ class WeasleyClockConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         data_schema = vol.Schema(schema_dict)
 
-        # Crea tabella zone con ID fissi e nomi editabili - TUTTE LE ZONE
+        # Create zone table
         zone_table = []
         zone_table.append(f"📋 **Configurazione Zone** ({len(actual_zones)} zone trovate):")
         zone_table.append("")
@@ -521,7 +385,7 @@ class WeasleyClockConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             errors=errors,
             description_placeholders={
                 "discovered_zones": "\n".join(zone_table),
-                "zones_help": "✏️ **Modifica i nomi nei campi sopra**\n📌 **Gli ID zone (come 'home', 'work', ecc.) sono fissi e corrispondono a Home Assistant**\n🔍 **Ogni campo mostra chiaramente l'ID zona corrispondente**"
+                "zones_help": "✏️ **Modifica i nomi nei campi sopra**\n📌 **Gli ID zone (come 'home', 'work', ecc.) sono fissi e corrispondono a Home Assistant**",
             },
         )
 
@@ -536,14 +400,12 @@ class WeasleyClockConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 output_path = user_input.get("output_path", "").strip()
                 if not output_path:
                     errors["output_path"] = "path_required"
-                elif not output_path.startswith("/config/www/"):
-                    errors["output_path"] = "invalid_path"
                 elif not output_path.endswith(".png"):
                     errors["output_path"] = "invalid_extension"
                 else:
                     self.config_data.update(user_input)
 
-                    # Crea la configurazione finale
+                    # Build final config
                     final_config = self._build_final_config()
 
                     # Validate the final configuration
@@ -560,7 +422,7 @@ class WeasleyClockConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                             )
                         else:
                             return self.async_create_entry(
-                                title=f"{NAME} - {len(final_config.get('zones', {}).get('zone_configs', []))} zone",
+                                title=f"{NAME} - {len(final_config.get('zones', {}))} zone",
                                 data=final_config,
                             )
                         
@@ -585,15 +447,13 @@ class WeasleyClockConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             data_schema=data_schema,
             errors=errors,
             description_placeholders={
-                "final_step": "🎨 **Configurazione finale completata!**\n\n📁 L'immagine dell'orologio sarà salvata nel percorso specificato\n🌐 Assicurati che il percorso inizi con `/config/www/` per essere accessibile via web\n🖼️ Il file deve avere estensione `.png`\n\n📝 **Configurazione Font Etichette Zone:**\n• Font Minimo: dimensione minima del testo delle zone\n• Font Massimo: dimensione massima del testo delle zone\n• Fattore Riduzione: quanto ridurre il font per testi lunghi (0.15 = 15% per ogni gruppo di 4 caratteri)"
+                "final_step": "🎨 **Configurazione finale!**\n\n📁 L'immagine dell'orologio sarà salvata nel percorso specificato\n✏️ Puoi usare qualsiasi percorso valido (es: `/config/www/mio_orologio.png`)\n🎯 Assicurati che la cartella esista",
             }
         )
 
     def _build_final_config(self) -> dict[str, Any]:
         """Build the final configuration dictionary."""
         config = {
-            "auto_discover_users":
-            self.config_data.get("auto_discover_users", True),
             "auto_update_enabled":
             self.config_data.get("auto_update_enabled", True),
             "update_interval_seconds":
@@ -611,54 +471,20 @@ class WeasleyClockConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             self.config_data.get("max_font_size", 38),
             "font_reduction_factor":
             self.config_data.get("font_reduction_factor", 0.15),
+            "selected_users":
+            self.config_data.get("selected_users", []),
         }
-
-        # Parse manual users if configured
-        if not config[
-                "auto_discover_users"] and "manual_users" in self.config_data:
-            users_text = self.config_data["manual_users"].get(
-                "users_config", "")
-            users = {}
-            for line in users_text.split('\n'):
-                line = line.strip()
-                if line and ',' in line:
-                    parts = line.split(',')
-                    if len(parts) >= 3:
-                        entity_id, name, image_path = parts[0].strip(
-                        ), parts[1].strip(), parts[2].strip()
-                        users[entity_id] = {
-                            "name": name,
-                            "image_path": image_path
-                        }
-            config["users"] = users
-
-        # Parse user filters if auto discovery is enabled
-        if config["auto_discover_users"] and "user_filters" in self.config_data:
-            user_filters = {}
-
-            # Get selected users from checkbox processing
-            selected_users = self.config_data["user_filters"].get(
-                "selected_users", [])
-            if selected_users:
-                user_filters["included_users"] = selected_users
-
-            # Include exclude_local_only setting
-            user_filters["exclude_local_only"] = self.config_data[
-                "user_filters"].get("exclude_local_only", True)
-
-            config["user_filters"] = user_filters
 
         # Parse zones from new structure
         zones = {}
         zone_mapping = {}
         if "zones" in self.config_data and "zone_configs" in self.config_data[
                 "zones"]:
-            # Colori predefiniti per le zone
+            # Default colors for zones
             default_colors = ["#4CAF50", "#2196F3", "#FF9800", "#9C27B0", "#F44336", "#795548", "#607D8B", "#FFC107"]
             
             for i, zone_config in enumerate(self.config_data["zones"]["zone_configs"]):
                 zone_id = zone_config["id"]
-                # Usa un colore dalla lista predefinita basato sull'indice
                 default_color = default_colors[i % len(default_colors)]
                 zones[zone_id] = {
                     "label": zone_config["name"],
@@ -673,7 +499,6 @@ class WeasleyClockConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
     async def async_step_reconfigure(self, user_input: dict[str, Any] | None = None) -> FlowResult:
         """Handle reconfiguration of the component."""
-        # Get the entry being reconfigured
         reconfigure_entry = self._get_reconfigure_entry()
         if not reconfigure_entry:
             return self.async_abort(reason="no_entry_to_reconfigure")
@@ -692,7 +517,7 @@ class WeasleyClockConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         """Validate the final configuration."""
         try:
             # Validate required fields
-            required_fields = ["auto_discover_users", "zones"]
+            required_fields = ["selected_users", "zones"]
             for field in required_fields:
                 if field not in config:
                     _LOGGER.error(f"Missing required field: {field}")
@@ -711,8 +536,8 @@ class WeasleyClockConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
             # Validate output path
             output_path = config.get("output_path", "")
-            if not output_path.startswith("/config/www/") or not output_path.endswith(".png"):
-                _LOGGER.error("Invalid output path")
+            if not output_path.endswith(".png"):
+                _LOGGER.error("Invalid output path - must end with .png")
                 return False
 
             return True
