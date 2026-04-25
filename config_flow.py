@@ -82,7 +82,7 @@ class WeasleyClockConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     async def async_step_select_users(self,
                                       user_input: dict[str, Any] | None = None
                                       ) -> FlowResult:
-        """Select users and add weasleyclock tag to them."""
+        """Select users with weasleyclock tag and add tag to them."""
         errors = {}
 
         if user_input is not None:
@@ -107,10 +107,12 @@ class WeasleyClockConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     # Add weasleyclock tag to selected users
                     for entity_id in selected_users:
                         try:
+                            # Get current tags
                             state = self.hass.states.get(entity_id)
                             if state:
-                                current_tags = list(state.attributes.get('tags', []) or [])
+                                current_tags = state.attributes.get('tags', [])
                                 if 'weasleyclock' not in current_tags:
+                                    current_tags = list(current_tags) if current_tags else []
                                     current_tags.append('weasleyclock')
                                     # Update person entity with new tag
                                     self.hass.states.async_set(
@@ -148,7 +150,7 @@ class WeasleyClockConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     current_zone = state.state
                     
                     # Check if already has weasleyclock tag
-                    has_tag = 'weasleyclock' in (state.attributes.get('tags') or [])
+                    has_tag = 'weasleyclock' in state.attributes.get('tags', [])
 
                     person_entities.append((entity_id, friendly_name,
                                           current_zone, entity_picture, has_tag))
@@ -213,7 +215,7 @@ class WeasleyClockConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 for entity_id in person_entity_ids:
                     try:
                         state = self.hass.states.get(entity_id)
-                        if state and 'weasleyclock' in (state.attributes.get('tags') or []):
+                        if state and 'weasleyclock' in state.attributes.get('tags', []):
                             zone = state.state
                             discovered_zones.add(zone)
                     except Exception:
@@ -286,7 +288,7 @@ class WeasleyClockConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         for entity_id in person_entity_ids:
             try:
                 state = self.hass.states.get(entity_id)
-                if state and 'weasleyclock' in (state.attributes.get('tags') or []):
+                if state and 'weasleyclock' in state.attributes.get('tags', []):
                     zone = state.state
                     friendly_name = state.attributes.get(
                         "friendly_name",
@@ -422,7 +424,7 @@ class WeasleyClockConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                             )
                         else:
                             return self.async_create_entry(
-                                title=f"{NAME} - {len(final_config.get('zones', {}))} zone",
+                                title=f"{NAME} - {len(final_config.get('zones', {}).get('zone_configs', []))} zone",
                                 data=final_config,
                             )
                         
@@ -447,7 +449,7 @@ class WeasleyClockConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             data_schema=data_schema,
             errors=errors,
             description_placeholders={
-                "final_step": "🎨 **Configurazione finale!**\n\n📁 L'immagine dell'orologio sarà salvata nel percorso specificato\n✏️ Puoi usare qualsiasi percorso valido (es: `/config/www/mio_orologio.png`)\n🎯 Assicurati che la cartella esista",
+                "final_step": "🎨 **Configurazione finale!**\n\n📁 L'immagine dell'orologio sarà salvata nel percorso specificato\n✏️ Puoi usare qualsiasi percorso valido (es: `/config/www/mio_orologio.png`)\n🎯 Assicurati che la cartella esista in Home Assistant",
             }
         )
 
@@ -537,7 +539,7 @@ class WeasleyClockConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             # Validate output path
             output_path = config.get("output_path", "")
             if not output_path.endswith(".png"):
-                _LOGGER.error("Invalid output path - must end with .png")
+                _LOGGER.error("Invalid output path")
                 return False
 
             return True
